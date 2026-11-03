@@ -1,0 +1,31 @@
+code,portal_name,type,group_code,team_email_placeholder,notes
+SIGN_REPAIR,Signage Problem (Repair Signage),problem,SIGN,fm-signage@cityu.edu.hk,Broken/faded/wayfinding sign
+SIGN_OTHER,Signage Problem,problem,SIGN,fm-signage@cityu.edu.hk,Other signage issue (portal duplicate)
+SIGN_ADD,Add/Change Signage,request,SIGN,fm-signage@cityu.edu.hk,Install new or modify existing sign
+CLEAN_STD,Cleaning Services,problem,CLEAN,fm-cleaning@cityu.edu.hk,Dirty floor, spill, overflowing bin
+CLEAN_EXTRA,Additional Cleaning Services (with endorsement of HoD),request,CLEAN,fm-cleaning@cityu.edu.hk,Extra cleaning needs HoD sign-off
+GLASS_DISPOSAL,Broken glass disposal box,request,CLEAN,fm-cleaning@cityu.edu.hk,Request broken-glass disposal box
+SECU_GENERAL,Security and Cleaning Services,problem,SECU,fm-security@cityu.edu.hk,Loitering, door alarm, suspicious person
+AUTO_DOOR,Automatic Door (asset-code type),problem,AUTO,fm-building@cityu.edu.hk,Added by us - not in portal screenshot; covers AD- asset codes
+SECU_EXTRA,Additional Security Guard / Security Services (with endorsement of HoD),request,SECU,fm-security@cityu.edu.hk,Extra guard needs HoD sign-off
+EVENT_BANNER,Banner / Backdrop for Event,request,EVENT,fm-event@cityu.edu.hk,Event banner/backdrop
+EVENT_CARPET,Carpet for Event,request,EVENT,fm-event@cityu.edu.hk,Event carpet
+EVENT_CORD,Extension Cord for Event,request,EVENT,fm-event@cityu.edu.hk,Event power cord
+EVENT_DISPLAY,Display Unit for Event,request,EVENT,fm-event@cityu.edu.hk,Display unit for exhibition
+EVENT_ROPE,Request Rope and Stand,request,EVENT,fm-event@cityu.edu.hk,Rope barrier/stand
+EVENT_MISC,Miscellaneous Job for Event,request,EVENT,fm-event@cityu.edu.hk,Other event support
+EVENT_SUPPORT,Event Support,request,EVENT,fm-event@cityu.edu.hk,General event support
+HVAC_HOURS,Extension of Air-conditioning and Lighting Hours,request,HVAC,fm-hvac@cityu.edu.hk,Overtime AC/lighting
+SAFE_FIRSTAID,First Aid Items,problem,SAFE,fm-safety@cityu.edu.hk,First aid box empty/expired
+INCIDENT,Incident report (Create),problem,SAFE,fm-safety@cityu.edu.hk,Safety incident / near-miss
+MOVE_GENERAL,General Moving Services,request,MOVE,fm-moving@cityu.edu.hk,General furniture move
+MOVE_FURN,Moving Furniture,problem,MOVE,fm-moving@cityu.edu.hk,Broken/wobbly chair or table
+RENO_OFFICE,Office Relocation,request,MOVE,fm-moving@cityu.edu.hk,Office move
+RENO_PAINT,"Hanging / Dismantle Painting, Decoration and Board",request,RENO,fm-reno@cityu.edu.hk,"Painting/decoration install or remove"
+RENO_WORKS,Renovation Works,request,RENO,fm-reno@cityu.edu.hk,Wall/ceiling/door repair
+LAND_LSC,Landscapes Services,problem,LAND,fm-landscape@cityu.edu.hk,Plants, planters, outdoor area
+LOCKER,Locker,problem,LOCK,fm-lockers@cityu.edu.hk,Jammed/broken locker
+MAIL_SVC,Mailing Services,request,MAIL,fm-mail@cityu.edu.hk,Mailing/pigeonhole
+KEY_CUT,Key Cutting,request,KEY,fm-keys@cityu.edu.hk,Duplicate a door key
+CONF_DISPOSAL,Disposal of Confidential documents (at least 15 A4 cartons at one pickup point),request,OTHR,fm-records@cityu.edu.hk,Minimum 15 A4 boxes
+OTHERS,Others,problem,OTHR,fm-general@cityu.edu.hk,Anything not listed
