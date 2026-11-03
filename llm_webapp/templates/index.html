@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CityU Facility Report · AI 演示台</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">CU</span>
+    <div>
+      <h1 data-i18n="appTitle">CityU Facility Report · AI 演示台</h1>
+      <p class="subtitle" data-i18n="subtitle">大模型接入演示 · 对话 + 工单智能分类</p>
+    </div>
+  </div>
+  <div class="top-right">
+    <div class="lang-switch" id="langSwitch">
+      <button data-lang="zh-CN" class="active">简体</button>
+      <button data-lang="en">EN</button>
+      <button data-lang="zh-TW">繁體</button>
+    </div>
+    <div class="badges">
+      <span class="badge"><span data-i18n="chatBackendLabel">对话后端:</span> <b id="chatBackend"></b></span>
+      <span class="badge"><span data-i18n="classifyBackendLabel">分类后端:</span> <b id="classifyBackend"></b></span>
+      <span class="badge status" id="statusBadge" data-i18n="statusChecking">检测中…</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="tabs">
+    <button class="tab active" data-tab="chat" data-i18n="tabChat">💬 大模型对话</button>
+    <button class="tab" data-tab="classify" data-i18n="tabClassify">🏷️ 工单 AI 分类</button>
+  </div>
+
+  <!-- ============ 对话 ============ -->
+  <section id="tab-chat" class="panel active">
+    <div class="chat-log" id="chatLog">
+      <div class="msg assistant">
+        <div class="bubble" data-i18n="chatIntro">你好！我是接入演示的 AI 助手。有什么设施问题想咨询，直接问我吧。</div>
+      </div>
+    </div>
+    <form class="chat-input" id="chatForm">
+      <input type="text" id="chatText" data-i18n-placeholder="chatPlaceholder" placeholder="输入消息，例如：冷气机漏水怎么办？" autocomplete="off">
+      <button type="submit" data-i18n="send">发送</button>
+    </form>
+  </section>
+
+  <!-- ============ 工单分类 ============ -->
+  <section id="tab-classify" class="panel">
+    <p class="hint" data-i18n="classifyHint">输入一段报修描述，AI 会把它归到 14 个设施分组之一（SIGN / CLEAN / SECU / AUTO / EVENT / HVAC / SAFE / MOVE / RENO / LAND / LOCK / MAIL / KEY / OTHR）。</p>
+    <div class="samples">
+      <button class="sample" data-text="The automatic door at the concourse entrance is not opening, the sensor doesn't detect anyone" data-i18n-sample="autoDoor">自动门打不开</button>
+      <button class="sample" data-text="The air conditioner in LT-1 is leaking water onto the floor" data-i18n-sample="acLeak">冷气漏水</button>
+      <button class="sample" data-text="A light bulb is flickering in the corridor near the lift lobby" data-i18n-sample="bulbFlicker">灯泡闪烁</button>
+      <button class="sample" data-text="Please help to cut a duplicate key for locker L-203" data-i18n-sample="duplicateKey">配钥匙</button>
+    </div>
+    <textarea id="classifyText" rows="4" data-i18n-placeholder="classifyPlaceholder" placeholder="输入报修描述…"></textarea>
+    <button id="classifyBtn" class="primary" data-i18n="classifyBtn">AI 分类</button>
+    <div id="classifyResult" class="result hidden"></div>
+  </section>
+</main>
+
+<footer>
+  <p data-i18n="footer">LEAD Scheme 项目 · Flask + LLM 接入演示 · 完整流程：提交描述 → AI 分类/对话 → 返回结果</p>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+/* ================= 多语言词典 ================= */
+const I18N = {
+  "zh-CN": {
+    appTitle: "CityU Facility Report · AI 演示台",
+    subtitle: "大模型接入演示 · 对话 + 工单智能分类",
+    chatBackendLabel: "对话后端:",
+    classifyBackendLabel: "分类后端:",
+    statusChecking: "检测中…",
+    statusOk: "服务正常",
+    statusFail: "无法连接",
+    tabChat: "💬 大模型对话",
+    tabClassify: "🏷️ 工单 AI 分类",
+    chatIntro: "你好！我是接入演示的 AI 助手。有什么设施问题想咨询，直接问我吧。",
+    chatPlaceholder: "输入消息，例如：冷气机漏水怎么办？",
+    send: "发送",
+    classifyHint: "输入一段报修描述，AI 会把它归到 14 个设施分组之一（SIGN / CLEAN / SECU / AUTO / EVENT / HVAC / SAFE / MOVE / RENO / LAND / LOCK / MAIL / KEY / OTHR）。",
+    classifyPlaceholder: "输入报修描述…",
+    classifyBtn: "AI 分类",
+    sample_autoDoor: "自动门打不开",
+    sample_acLeak: "冷气漏水",
+    sample_bulbFlicker: "灯泡闪烁",
+    sample_duplicateKey: "配钥匙",
+    thinking: "思考中…",
+    aiClassifying: "AI 分类中…",
+    errorPrefix: "出错了：",
+    networkError: "网络错误：",
+    backendLabel: "后端：",
+    confidenceLabel: "置信度：",
+    groupHeader: "分组",
+    probHeader: "概率",
+    footer: "LEAD Scheme 项目 · Flask + LLM 接入演示 · 完整流程：提交描述 → AI 分类/对话 → 返回结果",
+    backend_openai: "OpenAI 兼容 API（DeepSeek）",
+    backend_local_model: "本地训练模型 (ml/model.pkl)",
+    backend_mock: "模拟模式",
+    backend_ollama: "Ollama 本地模型",
+    backend_fallback: "关键词兜底",
+    groups: {
+      SIGN: "标识牌", CLEAN: "清洁", SECU: "安保", AUTO: "自动门", EVENT: "活动支援",
+      HVAC: "空调水电", SAFE: "安全急救", MOVE: "搬运", RENO: "装修", LAND: "绿化",
+      LOCK: "储物柜", MAIL: "邮政", KEY: "钥匙", OTHR: "其他"
+    }
+  },
+  "en": {
+    appTitle: "CityU Facility Report · AI Demo",
+    subtitle: "LLM Integration Demo · Chat + Smart Ticket Classification",
+    chatBackendLabel: "Chat backend:",
+    classifyBackendLabel: "Classifier backend:",
+    statusChecking: "Checking…",
+    statusOk: "Service running",
+    statusFail: "Cannot connect",
+    tabChat: "💬 Chat with LLM",
+    tabClassify: "🏷️ AI Ticket Classification",
+    chatIntro: "Hi! I'm the AI assistant in this demo. Ask me anything about campus facility issues.",
+    chatPlaceholder: "Type a message, e.g. How do I report a leaking air conditioner?",
+    send: "Send",
+    classifyHint: "Enter a facility report description and AI will assign it to one of 14 groups (SIGN / CLEAN / SECU / AUTO / EVENT / HVAC / SAFE / MOVE / RENO / LAND / LOCK / MAIL / KEY / OTHR).",
+    classifyPlaceholder: "Enter a report description…",
+    classifyBtn: "Classify",
+    sample_autoDoor: "Auto door won't open",
+    sample_acLeak: "Air conditioner leaking",
+    sample_bulbFlicker: "Flickering light bulb",
+    sample_duplicateKey: "Duplicate key",
+    thinking: "Thinking…",
+    aiClassifying: "Classifying…",
+    errorPrefix: "Error: ",
+    networkError: "Network error: ",
+    backendLabel: "Backend: ",
+    confidenceLabel: "Confidence: ",
+    groupHeader: "Group",
+    probHeader: "Probability",
+    footer: "LEAD Scheme project · Flask + LLM demo · Flow: submit description → AI classify/chat → get result",
+    backend_openai: "OpenAI-compatible API (DeepSeek)",
+    backend_local_model: "Trained local model (ml/model.pkl)",
+    backend_mock: "Mock mode",
+    backend_ollama: "Ollama local model",
+    backend_fallback: "Keyword fallback",
+    groups: {
+      SIGN: "Signage", CLEAN: "Cleaning", SECU: "Security", AUTO: "Auto Door", EVENT: "Event Support",
+      HVAC: "HVAC & Utilities", SAFE: "Safety & First Aid", MOVE: "Moving", RENO: "Renovation", LAND: "Landscape",
+      LOCK: "Lockers", MAIL: "Mail", KEY: "Keys", OTHR: "Others"
+    }
+  },
+  "zh-TW": {
+    appTitle: "CityU Facility Report · AI 演示台",
+    subtitle: "大模型接入演示 · 對話 + 工單智能分類",
+    chatBackendLabel: "對話後端:",
+    classifyBackendLabel: "分類後端:",
+    statusChecking: "檢測中…",
+    statusOk: "服務正常",
+    statusFail: "無法連接",
+    tabChat: "💬 大模型對話",
+    tabClassify: "🏷️ 工單 AI 分類",
+    chatIntro: "你好！我是接入演示的 AI 助手。有設施問題想諮詢，直接問我吧。",
+    chatPlaceholder: "輸入訊息，例如：冷氣機漏水怎麼辦？",
+    send: "傳送",
+    classifyHint: "輸入一段報修描述，AI 會把它歸到 14 個設施分組之一（SIGN / CLEAN / SECU / AUTO / EVENT / HVAC / SAFE / MOVE / RENO / LAND / LOCK / MAIL / KEY / OTHR）。",
+    classifyPlaceholder: "輸入報修描述…",
+    classifyBtn: "AI 分類",
+    sample_autoDoor: "自動門打不開",
+    sample_acLeak: "冷氣漏水",
+    sample_bulbFlicker: "燈泡閃爍",
+    sample_duplicateKey: "配鑰匙",
+    thinking: "思考中…",
+    aiClassifying: "AI 分類中…",
+    errorPrefix: "出錯了：",
+    networkError: "網絡錯誤：",
+    backendLabel: "後端：",
+    confidenceLabel: "置信度：",
+    groupHeader: "分組",
+    probHeader: "機率",
+    footer: "LEAD Scheme 項目 · Flask + LLM 接入演示 · 完整流程：提交描述 → AI 分類/對話 → 返回結果",
+    backend_openai: "OpenAI 兼容 API（DeepSeek）",
+    backend_local_model: "本地訓練模型 (ml/model.pkl)",
+    backend_mock: "模擬模式",
+    backend_ollama: "Ollama 本機模型",
+    backend_fallback: "關鍵字兜底",
+    groups: {
+      SIGN: "標識牌", CLEAN: "清潔", SECU: "保安", AUTO: "自動門", EVENT: "活動支援",
+      HVAC: "空調水電", SAFE: "安全急救", MOVE: "搬運", RENO: "裝修", LAND: "綠化",
+      LOCK: "儲物櫃", MAIL: "郵政", KEY: "鑰匙", OTHR: "其他"
+    }
+  }
+};
+
+/* ================= 语言管理 ================= */
+let lang = localStorage.getItem("llm_lang") || "zh-CN";
+let lastClassify = null;   // 最近一次分类结果，用于切换语言后重绘
+let backendInfo = null;    // /api/health 返回
+
+function t(k) { return I18N[lang][k] || k; }
+
+function friendlyBackend(b) {
+  if (!b) return b;
+  if (b.startsWith("local_model")) return t("backend_local_model");
+  if (b.startsWith("fallback")) return t("backend_fallback");
+  return t("backend_" + b) || b;
+}
+
+function applyI18n() {
+  document.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  document.querySelectorAll("[data-i18n-sample]").forEach(el => { el.textContent = t("sample_" + el.dataset.i18nSample); });
+  document.title = t("appTitle");
+  if (backendInfo) {
+    $("#chatBackend").textContent = friendlyBackend(backendInfo.chat_backend);
+    $("#classifyBackend").textContent = friendlyBackend(backendInfo.classify_backend);
+  }
+  const sb = $("#statusBadge");
+  if (sb.dataset.state === "ok") sb.textContent = t("statusOk");
+  else if (sb.dataset.state === "err") sb.textContent = t("statusFail");
+  else sb.textContent = t("statusChecking");
+  if (lastClassify) renderClassify();
+}
+
+document.querySelectorAll("#langSwitch button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    lang = btn.dataset.lang;
+    localStorage.setItem("llm_lang", lang);
+    document.querySelectorAll("#langSwitch button").forEach(b => b.classList.toggle("active", b === btn));
+    applyI18n();
+  });
+});
+
+// 初始语言高亮
+document.querySelectorAll("#langSwitch button").forEach(b => b.classList.toggle("active", b.dataset.lang === lang));
+
+/* ================= 后端状态 ================= */
+fetch("/api/health").then(r => r.json()).then(d => {
+  backendInfo = d;
+  const sb = $("#statusBadge");
+  sb.dataset.state = "ok";
+  sb.textContent = t("statusOk");
+  $("#chatBackend").textContent = friendlyBackend(d.chat_backend);
+  $("#classifyBackend").textContent = friendlyBackend(d.classify_backend);
+}).catch(() => {
+  const sb = $("#statusBadge");
+  sb.dataset.state = "err";
+  sb.textContent = t("statusFail");
+});
+
+/* ================= Tab 切换 ================= */
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.add("active");
+  });
+});
+
+/* ================= 对话 ================= */
+function appendMsg(role, text) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  wrap.appendChild(bubble);
+  $("chatLog").appendChild(wrap);
+  $("chatLog").scrollTop = $("chatLog").scrollHeight;
+}
+
+$("chatForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("chatText").value.trim();
+  if (!text) return;
+  appendMsg("user", text);
+  $("chatText").value = "";
+  const sending = appendMsg("assistant", t("thinking"));
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({messages: [{role: "user", content: text}]})
+    });
+    const data = await resp.json();
+    sending.querySelector(".bubble").textContent = data.error
+      ? t("errorPrefix") + data.error : data.reply;
+  } catch (err) {
+    sending.querySelector(".bubble").textContent = t("networkError") + err.message;
+  }
+});
+
+/* ================= 工单分类 ================= */
+document.querySelectorAll(".sample").forEach(btn => {
+  btn.addEventListener("click", () => { $("classifyText").value = btn.dataset.text; });
+});
+
+function renderClassify(state) {
+  const box = $("classifyResult");
+  if (state === "loading") {
+    box.classList.remove("hidden");
+    box.innerHTML = `<p class="loading">${t("aiClassifying")}</p>`;
+    return;
+  }
+  const d = lastClassify;
+  if (!d) return;
+  box.classList.remove("hidden");
+  if (d.error) {
+    box.innerHTML = `<p class="err-text">${t("errorPrefix")}${d.error}</p>`;
+    return;
+  }
+  const gname = I18N[lang].groups[d.group] ? " · " + I18N[lang].groups[d.group] : "";
+  let html = `<div class="big-group">${d.group}${gname}</div>`;
+  html += `<p class="meta">${t("backendLabel")}${friendlyBackend(d.backend)}`;
+  if (d.confidence != null) html += ` · ${t("confidenceLabel")}${(d.confidence * 100).toFixed(1)}%`;
+  html += "</p>";
+  if (d.top3 && d.top3.length) {
+    html += `<table class="top3"><tr><th>${t("groupHeader")}</th><th>${t("probHeader")}</th></tr>`;
+    d.top3.forEach(([g, p]) => {
+      const gn = I18N[lang].groups[g] ? " · " + I18N[lang].groups[g] : "";
+      html += `<tr><td>${g}${gn}</td><td>${(p * 100).toFixed(1)}%</td></tr>`;
+    });
+    html += "</table>";
+  }
+  box.innerHTML = html;
+}
+
+$("classifyBtn").addEventListener("click", async () => {
+  const text = $("classifyText").value.trim();
+  if (!text) return;
+  lastClassify = null;
+  renderClassify("loading");
+  try {
+    const resp = await fetch("/api/classify", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: text})
+    });
+    lastClassify = await resp.json();
+    renderClassify();
+  } catch (err) {
+    lastClassify = {error: t("networkError") + err.message};
+    renderClassify();
+  }
+});
+
+applyI18n();
+</script>
+</body>
+</html>
