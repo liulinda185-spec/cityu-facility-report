@@ -1,0 +1,48 @@
+# Render Blueprint - CityU Facility Report (main) + LLM demo
+# Import via: dashboard.render.com -> New + -> Blueprint (select this repo)
+services:
+  - type: web
+    name: cityu-facility-report
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: .
+    buildCommand: pip install -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.16"
+      - key: OFFICER_TOKEN
+        value: "9fa506254ec655a6028327e76aeef538d6c903e9bdc25d0d"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: FROM_ADDR
+        sync: false
+      - key: PILOT_CATCHALL
+        sync: false
+
+  - type: web
+    name: cityu-llm-demo
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: .
+    buildCommand: pip install -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
+    startCommand: python llm_webapp/app.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.16"
+      - key: CHAT_BACKEND
+        value: openai
+      - key: CLASSIFY_BACKEND
+        value: local_model
+      - key: OPENAI_BASE_URL
+        value: https://api.deepseek.com/v1
+      - key: OPENAI_MODEL
+        value: deepseek-chat
+      - key: OPENAI_API_KEY
+        sync: false
