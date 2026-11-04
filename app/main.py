@@ -27,7 +27,14 @@ def similarity_score(left: str, right: str) -> float:
         return 0.0
     return len(a & b) / len(a | b)
 
-OFFICER_TOKEN = os.getenv("OFFICER_TOKEN", "pilot2026")  # change in production
+# Security: no hardcoded default. Without OFFICER_TOKEN we generate a random
+# token and print it once, so an unconfigured public deployment cannot be
+# accessed with a known password.
+OFFICER_TOKEN = os.getenv("OFFICER_TOKEN")
+if not OFFICER_TOKEN:
+    OFFICER_TOKEN = uuid.uuid4().hex
+    print("WARNING: OFFICER_TOKEN not set - generated a random token.", flush=True)
+    print(f"OFFICER_TOKEN={OFFICER_TOKEN}", flush=True)
 
 @app.on_event("startup")
 def startup():

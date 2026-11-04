@@ -14,7 +14,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.13.16"
       - key: OFFICER_TOKEN
-        value: "9fa506254ec655a6028327e76aeef538d6c903e9bdc25d0d"
+        sync: false
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASS

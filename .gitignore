@@ -16,3 +16,6 @@ llm_webapp/server*.log
 # OS
 .DS_Store
 Thumbs.db
+
+# HF upload assembly (local staging only, not part of the repo)
+hf_deploy/
