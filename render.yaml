@@ -7,12 +7,12 @@ services:
     plan: free
     region: oregon
     rootDir: .
-    buildCommand: pip install -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
+    buildCommand: pip install --prefer-binary -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
-        value: "3.13.16"
+        value: "3.12.10"
       - key: OFFICER_TOKEN
         sync: false
       - key: SMTP_USER
@@ -30,12 +30,12 @@ services:
     plan: free
     region: oregon
     rootDir: .
-    buildCommand: pip install -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
+    buildCommand: pip install --prefer-binary -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
     startCommand: python llm_webapp/app.py
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.13.16"
+        value: "3.12.10"
       - key: CHAT_BACKEND
         value: openai
       - key: CLASSIFY_BACKEND
