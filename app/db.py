@@ -387,10 +387,23 @@ def update_zone_labels():
 
 
 def next_ticket_code():
+    """Next code in the year's series.
+
+    Based on the highest existing code, not COUNT(*): deleting a ticket used to
+    renumber the next one onto an already-used code, and COUNT+1 also collides
+    when two submissions land at once. `code` is UNIQUE, so the insert site
+    retries on a rare race; this simply never reuses a number.
+    """
     year = datetime.now().year
+    prefix = f"FM-{year}-"
     conn = get_conn()
-    cur = conn.cursor()
-    row = cur.execute("SELECT COUNT(*) FROM tickets WHERE code LIKE ?", (f"FM-{year}-%",)).fetchone()
-    n = row[0] + 1
+    row = conn.execute(
+        "SELECT code FROM tickets WHERE code LIKE ? ORDER BY code DESC LIMIT 1", (f"{prefix}%",)
+    ).fetchone()
     conn.close()
-    return f"FM-{year}-{n:06d}"
+    n = 1
+    if row:
+        match = re.match(r"(\d+)", (row[0] or "")[len(prefix):])
+        if match:
+            n = int(match.group(1)) + 1
+    return f"{prefix}{n:06d}"

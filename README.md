@@ -22,7 +22,7 @@ Open:
 - Track: http://localhost:8000/track
 - Officer: http://localhost:8000/officer
 - Assistant: http://localhost:8000/assistant
-- Operations dashboard: http://localhost:8000/dashboard?token=<OFFICER_TOKEN>
+- Operations dashboard: http://localhost:8000/dashboard (sign in at `/officer` first, or append `?token=<OFFICER_TOKEN>` for scripts)
 
 There is no built-in password. Set `OFFICER_TOKEN` before starting; if you don't,
 the app generates a random one and prints `OFFICER_TOKEN=…` in the console — copy
@@ -63,8 +63,11 @@ There is no default. Set one before starting:
 $env:OFFICER_TOKEN = "something-strong"
 ```
 Without it, a random token is generated at startup and printed once as
-`OFFICER_TOKEN=…`. The same token unlocks `/officer`, `/dashboard` and
-`/api/monitor/brief`, and is used internally by the assistant's duplicate check.
+`OFFICER_TOKEN=…`. Type it into the box on `/officer` and press **Sign in**: the
+server sets a 12-hour `HttpOnly` cookie (`fr_officer`), so the token stops
+appearing in URLs, screenshots and logs. **Sign out** clears it. Scripts and the
+assistant's duplicate check can still pass `?token=…`. Set `OFFICER_NAME` too if
+you want status notes to say who acted (`Claimed by Linda` instead of `officer`).
 
 ### 3.3 Asset register (when you're ready)
 Walk YKM 4/F and record stickers in a CSV: `asset_code, building, floor, zone, description`.
@@ -105,6 +108,7 @@ facility_report.db       SQLite (auto-created)
 test_db_smoke.py         Old smoke test (still passes; uses /api/analytics)
 test_user_events.py      End-to-end tracker + dashboard test (33 checks)
 test_merged_app.py       One-server check: assistant, watchtower, caching (29 checks)
+test_security_fixes.py   Public payload, uploads, sign-in, rate limit, numbering (24 checks)
 llm_webapp/              LEGACY — the Flask original, no longer deployed. Kept for
                          reference only; the live code is app/assistant/.
 ```
@@ -246,4 +250,23 @@ With `CHAT_BACKEND=mock` (the default) `/api/chat` and `/api/assistant` return a
 locally. Endpoints: `GET /api/health`, `POST /api/chat`, `POST /api/classify`,
 `POST /api/assistant`, `GET /api/monitor/brief?days=&token=`,
 `POST /api/monitor/refresh?days=&token=`.
+
+## 9. Hardening pass — what changed so the pilot is answerable to real users
+
+| Was | Is now |
+|-----|--------|
+| `GET /api/reports/{code}` returned the whole row, **including `reporter_email`**; codes are sequential, so anyone could walk them | Whitelisted payload + two limits (30/10 min per session, 60/10 min per source) → **429** |
+| `/uploads` served any file in the folder, name taken from the client extension | Explicit route, generated names, **magic-byte** type check, 5 MB cap, `nosniff` |
+| SMTP called inside the request; a slow mail host delayed the report | `BackgroundTasks` + `send_safe()`; `timeout=10` |
+| Emails linked to `http://host/track` | Links built from `PUBLIC_BASE_URL` or the request host |
+| `COUNT(*)+1` ticket numbers — a deletion caused a collision | Highest code in the year + 1, with insert retries |
+| Token in every URL/form, every action logged as "officer" | Cookie sign-in (`/officer/login`), `hmac` compare, `OFFICER_NAME` in status notes |
+
+Tests: `test_security_fixes.py` (24) covers the payload whitelist, 429, upload
+rejection/acceptance, cookie sign-in, closed dashboard, monotonic numbering and
+actor attribution. Run all four suites before deploying.
+
+Still open: the production token that leaked into `test_online_pg.py` has **not**
+been rotated — treat it as burned and issue a new `OFFICER_TOKEN`.
+
 

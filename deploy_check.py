@@ -17,6 +17,7 @@ REQUIRED = [
     "requirements.txt", "render.yaml", "seed_training_data.csv",
     "categories.csv", "ml/train.py", "app/main.py", "app/db.py",
     "app/analytics.py", "app/dashboard.py", "app/monitor.py",
+    "app/emailer.py", "app/ratelimit.py",
     "app/assistant/llm.py", "app/assistant/tools.py",
     "app/static/index.html", "app/static/officer.html",
     "app/static/assistant.html", "app/static/tracker.js",
