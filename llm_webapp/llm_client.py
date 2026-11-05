@@ -2,9 +2,11 @@
 
 对话（CHAT_BACKEND）：     mock | openai | ollama
 工单分类（CLASSIFY_BACKEND）：local_model | openai | ollama | mock
+工单助手（assistant）：    基于 CHAT_BACKEND（需 openai 兼容 API 支持 function calling）
 """
 from __future__ import annotations
 
+import json
 import re
 
 import requests
@@ -14,7 +16,7 @@ import config
 # ---------------------------------------------------------------- 通用 HTTP
 
 
-def _http_post(url: str, headers: dict, payload: dict, timeout: int = 60):
+def _http_post(url: str, headers: dict, payload: dict, timeout: int = 90):
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
@@ -27,7 +29,7 @@ def chat(messages: list[dict]) -> dict:
     """messages: [{"role": "user"/"assistant", "content": "..."}] → {"reply", "backend"}"""
     backend = config.CHAT_BACKEND
     if backend == "openai":
-        return {"reply": _chat_openai(messages), "backend": "openai"}
+        return {"reply": _chat_openai_text(messages), "backend": "openai"}
     if backend == "ollama":
         return {"reply": _chat_ollama(messages), "backend": "ollama"}
     return {"reply": _chat_mock(messages), "backend": "mock"}
@@ -44,13 +46,23 @@ def _chat_mock(messages: list[dict]) -> str:
     )
 
 
-def _chat_openai(messages: list[dict]) -> str:
+def _chat_openai_message(messages: list[dict], tools: list[dict] | None = None) -> dict:
+    """调用 OpenAI 兼容 API，返回完整 assistant message（含 tool_calls）。"""
+    payload = {"model": config.OPENAI_MODEL, "messages": messages}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     data = _http_post(
         f"{config.OPENAI_BASE_URL}/chat/completions",
         {"Authorization": f"Bearer {config.OPENAI_API_KEY}", "Content-Type": "application/json"},
-        {"model": config.OPENAI_MODEL, "messages": messages},
+        payload,
     )
-    return data["choices"][0]["message"]["content"]
+    return data["choices"][0]["message"]
+
+
+def _chat_openai_text(messages: list[dict]) -> str:
+    msg = _chat_openai_message(messages)
+    return msg.get("content") or ""
 
 
 def _chat_ollama(messages: list[dict]) -> str:
@@ -60,6 +72,88 @@ def _chat_ollama(messages: list[dict]) -> str:
         {"model": config.OLLAMA_MODEL, "messages": messages, "stream": False},
     )
     return data["message"]["content"]
+
+
+# ---------------------------------------------------------------- 工单助手
+
+ASSISTANT_SYSTEM_PROMPT = """你是 CityU 校园设施报修智能助手，服务于设施管理团队（YMK 4/F 中庭试点）。
+
+你的工作流程：
+1. 用户描述设施问题时，先确认信息是否齐全：具体位置(zone)、问题描述、紧急程度。缺信息时用一句话追问，不要反复盘问。
+2. 信息齐全后，**先调用 find_duplicates 检查是否有重复工单**（同位置+同类问题）；若有相似工单，向用户说明并建议合并，不要重复创建。
+3. 确认无重复后，调用 create_ticket 创建工单，并把生成的工单编号告知用户。
+4. 用户问工单进度时，调用 track_ticket 查询状态。
+
+规则：
+- 始终用中文回复，简洁、口语化，不要输出 JSON 或代码。
+- 用户没有明确位置时，默认引导使用 YKM-4-CONC 开头的位置代码；不知道区域就调用 get_zones 查看可用区域。
+- 紧急程度 impact 取值：BLOCKED/SAFETY/EMERGENCY → P1；MINOR → P2；INCONVENIENCE → P3。拿不准就用 P3。
+- 只做与设施报修相关的事，其他话题礼貌拒绝。
+"""
+
+
+def assistant(messages: list[dict], image_url: str = "") -> dict:
+    """工单助手：system prompt + function calling 循环。
+
+    messages: 用户对话（不含 system）。
+    image_url: 预留视觉通道（当前模型不支持图片时忽略）。
+    返回 {"reply", "steps", "backend"}
+    """
+    from assistant_tools import TOOL_DEFS, execute_tool, track_event
+
+    if config.CHAT_BACKEND != "openai":
+        return {
+            "reply": "工单助手需要接入 OpenAI 兼容 API（当前后端为 " + config.CHAT_BACKEND + "）。",
+            "steps": [], "backend": config.CHAT_BACKEND,
+        }
+
+    history = [{"role": "system", "content": ASSISTANT_SYSTEM_PROMPT}]
+    if image_url:
+        history.append({"role": "user", "content": [
+            {"type": "text", "text": "（用户附了一张现场照片，请结合对话上下文处理）"},
+            {"type": "image_url", "image_url": {"url": image_url}},
+        ]})
+    history.extend(messages[-8:])  # 控制上下文长度
+
+    steps: list[dict] = []
+    for _ in range(6):  # 最多 6 轮工具调用，防止死循环
+        try:
+            msg = _chat_openai_message(history, tools=TOOL_DEFS)
+        except Exception as exc:
+            track_event("assistant_error", metadata={"error": str(exc)[:200]})
+            raise
+        if not msg.get("tool_calls"):
+            return {
+                "reply": msg.get("content") or "（模型没有返回内容）",
+                "steps": steps,
+                "backend": config.CHAT_BACKEND,
+            }
+        history.append({
+            "role": "assistant",
+            "content": msg.get("content") or "",
+            "tool_calls": msg["tool_calls"],
+        })
+        for tc in msg["tool_calls"]:
+            fn = tc["function"]
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            try:
+                result = execute_tool(name, args)
+                status = "ok"
+            except Exception as exc:
+                result = {"error": f"{type(exc).__name__}: {exc}"}
+                status = "error"
+            steps.append({"tool": name, "args": args, "result": result, "status": status})
+            track_event("assistant_tool_call", metadata={"tool": name, "status": status})
+            history.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+    return {"reply": "工具调用次数过多，已停止。请重试。", "steps": steps, "backend": config.CHAT_BACKEND}
 
 
 # ---------------------------------------------------------------- 工单分类
@@ -157,7 +251,7 @@ def _classify_llm(text: str, backend: str) -> str:
         + ". Reply with only the group code.\n\nReport: " + text
     )
     messages = [{"role": "user", "content": prompt}]
-    reply = _chat_openai(messages) if backend == "openai" else _chat_ollama(messages)
+    reply = _chat_openai_text(messages) if backend == "openai" else _chat_ollama(messages)
     code = re.sub(r"[^A-Z]", "", reply.strip().upper())
     return code if code in GROUPS else "OTHR"
 
