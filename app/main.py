@@ -17,9 +17,19 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 def normalize_issue(value: str) -> set[str]:
     import re
-    words = set(re.findall(r"[a-z0-9]+", (value or "").lower()))
+    text = (value or "").lower()
+    words = set(re.findall(r"[a-z0-9]+", text))
     stop = {"the", "a", "an", "at", "near", "in", "on", "of", "for", "is", "are", "was", "with", "and", "to", "please", "there", "this", "that", "issue", "problem", "area", "4f", "4"}
-    return words - stop
+    tokens = words - stop
+    # 中文：连续汉字段做 bigram（去掉虚词后），让中文描述也能参与相似度
+    cjk_stop = set("的了在是有就没都又很多少一下也还跟和与及或吗呢吧啊哦嗯请")
+    for seg in re.findall(r"[\u4e00-\u9fff]+", text):
+        seg = "".join(ch for ch in seg if ch not in cjk_stop)
+        if len(seg) >= 2:
+            tokens.update(seg[i:i + 2] for i in range(len(seg) - 1))
+        elif seg:
+            tokens.add(seg)
+    return tokens
 
 def similarity_score(left: str, right: str) -> float:
     a, b = normalize_issue(left), normalize_issue(right)
@@ -75,7 +85,9 @@ async def analytics_event(request: Request):
     except Exception:
         raise HTTPException(400, "Invalid event payload")
     event_name = str(payload.get("event", ""))
-    allowed = {"page_view", "report_submitted", "ticket_claimed", "ticket_resolved", "category_corrected", "ticket_tracked"}
+    allowed = {"page_view", "report_submitted", "ticket_claimed", "ticket_resolved", "category_corrected", "ticket_tracked",
+               "assistant_opened", "assistant_message", "assistant_tool_call", "assistant_ticket_created",
+               "assistant_duplicates_found", "assistant_error"}
     if event_name not in allowed:
         raise HTTPException(400, "Unsupported analytics event")
     page = str(payload.get("page", ""))[:32]
@@ -225,15 +237,46 @@ def queue(status: str = "NEW", token: str = ""):
     return [dict(r) for r in rows]
 
 @app.get("/api/duplicates")
-def detect_duplicates(token: str = "", threshold: float = 0.34, days: int = 30):
+def detect_duplicates(token: str = "", threshold: float = 0.34, days: int = 30,
+                      query_text: str = "", query_zone: str = ""):
+    """重复检测。
+
+    - 无 query_text：聚类库内已有工单（返回簇列表，向后兼容）。
+    - 有 query_text：预检模式——把这段新描述与库内工单逐条比对，
+      返回相似工单（用于「建单前查重」，由 LLM 助手调用）。
+    """
     if token != OFFICER_TOKEN:
         raise HTTPException(403, "Bad officer token")
     threshold = min(max(threshold, 0.1), 1.0)
     conn = get_conn()
     rows = conn.execute("SELECT * FROM tickets WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC", (f"-{max(1,min(days,365))} days",)).fetchall()
     tickets = [dict(r) for r in rows]
-    # Cluster only within the exact same zone and classifier group. The text threshold
-    # then catches paraphrases while avoiding merging separate assets/issues.
+
+    if (query_text or "").strip():
+        # 预检模式：新描述 vs 已有工单
+        text = query_text.strip()
+        zone = (query_zone or "").strip().lower()
+        matches = []
+        for t in tickets:
+            t_zone = (t.get("zone_code") or "").strip().lower()
+            if zone and t_zone != zone:
+                continue
+            t_text = f"{(t.get('description') or '')} {(t.get('symptom') or '')}"
+            score = similarity_score(text, t_text)
+            if score >= threshold:
+                matches.append({
+                    "ticket": {"code": t["code"], "status": t["status"],
+                               "group_code": t["group_code"], "priority": t["priority"],
+                               "zone_code": t["zone_code"],
+                               "description": (t["description"] or "")[:120],
+                               "created_at": t["created_at"]},
+                    "similarity": round(score, 3),
+                })
+        matches.sort(key=lambda m: -m["similarity"])
+        conn.close()
+        return {"query": query_text, "matches": matches}
+
+    # 聚类模式：仅在完全相同 zone 与分类组内找重复
     clusters = []
     assigned = set()
     for i, first in enumerate(tickets):
@@ -343,3 +386,4 @@ def recategorize(code: str, new_category: str = Form(...), token: str = Form(...
                  ("category_corrected", "officer", code, "{}", datetime.now().isoformat()))
     conn.commit(); conn.close()
     return {"ok": True}
+
