@@ -18,6 +18,7 @@ from .assistant import llm as llm_mod
 from .assistant.tools import Api
 from .ratelimit import allow
 from . import monitor
+from . import storage
 
 app = FastAPI(title="CityU Facility Report")
 BASE = Path(__file__).resolve().parent
@@ -45,6 +46,10 @@ def _sniff_image(data: bytes) -> str | None:
 def serve_upload(name: str):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", name) or ".." in name:
         raise HTTPException(404)
+    # Production stores photos in R2 (the instance disk is wiped on every deploy);
+    # hand the browser straight to the public bucket URL.
+    if storage.is_remote():
+        return RedirectResponse(storage.public_url(name), status_code=302)
     path = UPLOAD_DIR / name
     if not path.is_file():
         raise HTTPException(404)
@@ -465,8 +470,7 @@ async def create_report(
         if not ext:
             raise HTTPException(400, "The photo must be a JPEG, PNG or WebP image")
         photo_path = f"photo-{secrets.token_hex(8)}{ext}"
-        with open(UPLOAD_DIR / photo_path, "wb") as f:
-            f.write(data)
+        storage.save(photo_path, data)
 
     now = datetime.now().isoformat()
     conn = get_conn()
