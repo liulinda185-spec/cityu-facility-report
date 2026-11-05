@@ -1,5 +1,12 @@
 # Render Blueprint - CityU Facility Report (main) + LLM demo
 # Import via: dashboard.render.com -> New + -> Blueprint (select this repo)
+databases:
+  - name: cityu-facility-db
+    databaseName: cityu_facility
+    user: cityu_facility
+    plan: free
+    region: oregon
+
 services:
   - type: web
     name: cityu-facility-report
@@ -15,6 +22,10 @@ services:
         value: "3.12.10"
       - key: OFFICER_TOKEN
         sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cityu-facility-db
+          property: connectionString
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASS

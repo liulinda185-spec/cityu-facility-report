@@ -91,10 +91,8 @@ def classify(text: str, symptom: str = "", asset_code: str = ""):
 
 def suggest_categories(group_code: str):
     """Return list of portal cards belonging to this AI group."""
-    import sqlite3
-    from .db import DB_PATH
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    from .db import get_conn
+    conn = get_conn()
     rows = conn.execute(
         "SELECT code, portal_name, type FROM categories WHERE group_code = ? "
         "ORDER BY CASE type WHEN 'problem' THEN 1 WHEN 'request' THEN 2 ELSE 3 END, portal_name",
@@ -105,9 +103,9 @@ def suggest_categories(group_code: str):
 
 def reseed_categories():
     """Rebuild the categories table from categories.csv, keeping tickets intact."""
-    import csv, sqlite3
-    from .db import DB_PATH, BASE_DIR
-    conn = sqlite3.connect(DB_PATH)
+    import csv
+    from .db import get_conn, BASE_DIR
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("DELETE FROM categories")
     with open(BASE_DIR / "categories.csv", encoding="utf-8") as f:
