@@ -135,6 +135,14 @@ textarea:focus { border-color: var(--teal); }
 .loading { color: var(--muted); }
 .err-text { color: var(--err); }
 
+/* ---------- 工单助手 ---------- */
+.stepbox { max-width: 92%; }
+.step {
+  font-size: 13px; line-height: 1.5; padding: 4px 0;
+  border-bottom: 1px dashed rgba(0,0,0,.08);
+}
+.step:last-child { border-bottom: none; }
+
 /* ---------- 页脚 ---------- */
 footer {
   text-align: center; padding: 14px; font-size: 12px; color: var(--muted);
