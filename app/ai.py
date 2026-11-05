@@ -55,10 +55,20 @@ def classify(text: str, symptom: str = "", asset_code: str = ""):
 
     text_lower = combined.lower()
 
-    # 2. Keyword evidence as a distribution
+    # 2. Keyword evidence as a distribution. Generic terms (light, water, power,
+    # door…) appear in almost every complaint and used to drag unrelated tickets
+    # into HVAC; they now count 0.3, specific terms count 1.0.
+    GENERIC_WORDS = {
+        "light", "water", "tap", "toilet", "power", "fan", "vent",
+        "cold", "hot", "leak", "plug", "socket", "door", "sensor",
+        "wall", "ceiling", "window", "tile", "cord", "poster",
+    }
     kw_hits = {}
     for group, words in KEYWORDS.items():
-        s = sum(1 for w in words if w in text_lower)
+        s = 0.0
+        for w in words:
+            if w in text_lower:
+                s += 0.3 if w in GENERIC_WORDS else 1.0
         if s:
             kw_hits[group] = s
     kw_total = sum(kw_hits.values())

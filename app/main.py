@@ -438,6 +438,13 @@ async def create_report(
 
     group, conf, _ = classify(description, symptom, asset_code)
 
+    # Confidence gate: a coin-flip prediction must not silently route a ticket
+    # to the wrong specialist inbox. We keep the predicted group on the row (for
+    # history and retraining), but flag the ticket and send it to the general
+    # inbox until an officer looks at it.
+    AI_REVIEW_THRESHOLD = 0.5
+    needs_review = conf < AI_REVIEW_THRESHOLD
+
     # If reporter confirmed a specific portal category, use it; else use group default
     final_category = category_code or None
 
@@ -485,6 +492,10 @@ async def create_report(
     ticket_id = conn.execute("SELECT id FROM tickets WHERE code=?", (code,)).fetchone()["id"]
     conn.execute("INSERT INTO status_events (ticket_id, from_status, to_status, note, created_at) VALUES (?,?,?,?,?)",
                  (ticket_id, None, "NEW", "Ticket submitted", now))
+    if needs_review:
+        conn.execute("INSERT INTO status_events (ticket_id, from_status, to_status, note, created_at) VALUES (?,?,?,?,?)",
+                     (ticket_id, None, "NEW",
+                      f"AI unsure (confidence {conf:.2f}, guessed {group}) — officer review before routing", now))
     conn.commit()
 
     # Route email: if specific category chosen, use its team_email; else group inbox
@@ -504,7 +515,7 @@ async def create_report(
             "MAIL": "fm-mail@cityu.local",
             "OTHR": "fm-general@cityu.local",
         }
-        team_email = group_inbox.get(group, "fm-general@cityu.local")
+        team_email = "fm-general@cityu.local" if needs_review else group_inbox.get(group, "fm-general@cityu.local")
     conn.close()
 
     # Authoritative: the row is committed, so this counts as a real submission.
@@ -775,8 +786,12 @@ def recategorize(code: str, request: Request, response: Response, new_category: 
         raise HTTPException(404, "Ticket not found")
     conn.execute("UPDATE tickets SET category_code=?, updated_at=? WHERE id=?",
                  (new_category, datetime.now().isoformat(), t["id"]))
+    # The dropdown value is a category code (e.g. "SIGN-01"); the classifier
+    # predicts group codes, so store the resolved group for retraining.
+    grp = conn.execute("SELECT group_code FROM categories WHERE code=?", (new_category,)).fetchone()
+    label = grp["group_code"] if grp and grp["group_code"] else new_category
     conn.execute("INSERT INTO training_examples (text, label, source) VALUES (?,?,?)",
-                 (t["description"], new_category, "officer_correction"))
+                 (t["description"], label, "officer_correction"))
     conn.commit(); conn.close()
     safe_record("officer_recategorize", session=session_of(request, response), page="officer",
                 ticket_code=code, props={"group": t["group_code"], "category": new_category},

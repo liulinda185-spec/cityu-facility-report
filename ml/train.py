@@ -15,6 +15,24 @@ from sklearn.metrics import classification_report
 BASE = Path(__file__).resolve().parent.parent
 df = pd.read_csv(BASE / "seed_training_data.csv")
 
+# Fold live officer corrections into training. On Render DATABASE_URL is set,
+# so every deploy retrains on everything the officer has re-labelled; locally
+# (no DATABASE_URL) this is a no-op and the seed CSV is used alone.
+try:
+    if os.getenv("DATABASE_URL"):
+        from app.db import get_conn
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT text, label FROM training_examples WHERE length(trim(text)) >= 3"
+        ).fetchall()
+        conn.close()
+        if rows:
+            corr = pd.DataFrame([{"text": r["text"], "category": r["label"], "source": "officer_correction"} for r in rows])
+            df = pd.concat([df, corr], ignore_index=True)
+            print(f"folded {len(corr)} officer corrections from live DB")
+except Exception as e:  # noqa: BLE001
+    print(f"[train] live corrections skipped: {e}")
+
 # Down-weight synthetic rows: duplicate seed rows 3x
 seed = df[df.source == "seed"]
 synth = df[df.source == "synthetic"] if "synthetic" in df.source.values else pd.DataFrame()
