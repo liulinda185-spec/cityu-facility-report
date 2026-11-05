@@ -26,6 +26,11 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 
+# 主系统 API（工单助手工具调用目标：创建工单 / 查重 / 追踪）
+FACILITY_API_BASE = os.getenv("FACILITY_API_BASE", "https://cityu-facility-report.onrender.com").rstrip("/")
+# 主管令牌：查重 /api/duplicates 等受保护接口需要（与主系统 OFFICER_TOKEN 相同）
+FACILITY_TOKEN = os.getenv("FACILITY_TOKEN", "")
+
 # 训练好的 sklearn 模型路径（默认指向项目 ml/model.pkl）
 MODEL_PATH = Path(os.getenv("MODEL_PATH", str(BASE_DIR.parent / "ml" / "model.pkl")))
 
