@@ -23,7 +23,7 @@ def normalize_issue(value: str) -> set[str]:
     tokens = words - stop
     # 中文：连续汉字段做 bigram（去掉虚词后），让中文描述也能参与相似度
     cjk_stop = set("的了在是有就没都又很多少一下也还跟和与及或吗呢吧啊哦嗯请")
-    for seg in re.findall(r"[\\u4e00-\\u9fff]+", text):
+    for seg in re.findall(r"[\u4e00-\u9fff]+", text):
         seg = "".join(ch for ch in seg if ch not in cjk_stop)
         if len(seg) >= 2:
             tokens.update(seg[i:i + 2] for i in range(len(seg) - 1))
