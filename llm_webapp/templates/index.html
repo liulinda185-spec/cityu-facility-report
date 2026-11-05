@@ -33,6 +33,7 @@
   <div class="tabs">
     <button class="tab active" data-tab="chat" data-i18n="tabChat">💬 大模型对话</button>
     <button class="tab" data-tab="classify" data-i18n="tabClassify">🏷️ 工单 AI 分类</button>
+    <button class="tab" data-tab="assistant" data-i18n="tabAssistant">🛠️ 工单助手</button>
   </div>
 
   <!-- ============ 对话 ============ -->
@@ -61,6 +62,19 @@
     <button id="classifyBtn" class="primary" data-i18n="classifyBtn">AI 分类</button>
     <div id="classifyResult" class="result hidden"></div>
   </section>
+
+  <!-- ============ 工单助手 ============ -->
+  <section id="tab-assistant" class="panel">
+    <div class="chat-log" id="assistantLog">
+      <div class="msg assistant">
+        <div class="bubble" data-i18n="assistantIntro">我是工单助手：告诉我设施问题（位置、情况、紧急程度），我会先查重、再帮你直接创建工单。</div>
+      </div>
+    </div>
+    <form class="chat-input" id="assistantForm">
+      <input type="text" id="assistantText" data-i18n-placeholder="assistantPlaceholder" placeholder="例：YKM 4楼咖啡区空调漏水，地上全是水，比较紧急" autocomplete="off">
+      <button type="submit" data-i18n="send">发送</button>
+    </form>
+  </section>
 </main>
 
 <footer>
@@ -82,9 +96,19 @@ const I18N = {
     statusFail: "无法连接",
     tabChat: "💬 大模型对话",
     tabClassify: "🏷️ 工单 AI 分类",
+    tabAssistant: "🛠️ 工单助手",
     chatIntro: "你好！我是接入演示的 AI 助手。有什么设施问题想咨询，直接问我吧。",
     chatPlaceholder: "输入消息，例如：冷气机漏水怎么办？",
     send: "发送",
+    assistantIntro: "我是工单助手：告诉我设施问题（位置、情况、紧急程度），我会先查重、再帮你直接创建工单。",
+    assistantPlaceholder: "例：YKM 4楼咖啡区空调漏水，地上全是水，比较紧急",
+    stepCreate: "已创建工单",
+    stepDup: "查重：找到",
+    stepDupUnit: "组重复",
+    stepTrack: "工单状态",
+    stepZones: "已获取区域列表",
+    stepUnknown: "工具",
+    assistantErr: "工单助手出错了：",
     classifyHint: "输入一段报修描述，AI 会把它归到 14 个设施分组之一（SIGN / CLEAN / SECU / AUTO / EVENT / HVAC / SAFE / MOVE / RENO / LAND / LOCK / MAIL / KEY / OTHR）。",
     classifyPlaceholder: "输入报修描述…",
     classifyBtn: "AI 分类",
@@ -122,9 +146,19 @@ const I18N = {
     statusFail: "Cannot connect",
     tabChat: "💬 Chat with LLM",
     tabClassify: "🏷️ AI Ticket Classification",
+    tabAssistant: "🛠️ Ticket Assistant",
     chatIntro: "Hi! I'm the AI assistant in this demo. Ask me anything about campus facility issues.",
     chatPlaceholder: "Type a message, e.g. How do I report a leaking air conditioner?",
     send: "Send",
+    assistantIntro: "I'm the ticket assistant: tell me the facility issue (location, what, urgency) and I'll check for duplicates and create a ticket for you.",
+    assistantPlaceholder: "e.g. Aircon leaking at the YKM 4/F coffee area, water all over the floor, urgent",
+    stepCreate: "Ticket created",
+    stepDup: "Duplicates found:",
+    stepDupUnit: "cluster(s)",
+    stepTrack: "Ticket status",
+    stepZones: "Zone list fetched",
+    stepUnknown: "Tool",
+    assistantErr: "Assistant error: ",
     classifyHint: "Enter a facility report description and AI will assign it to one of 14 groups (SIGN / CLEAN / SECU / AUTO / EVENT / HVAC / SAFE / MOVE / RENO / LAND / LOCK / MAIL / KEY / OTHR).",
     classifyPlaceholder: "Enter a report description…",
     classifyBtn: "Classify",
@@ -162,9 +196,19 @@ const I18N = {
     statusFail: "無法連接",
     tabChat: "💬 大模型對話",
     tabClassify: "🏷️ 工單 AI 分類",
+    tabAssistant: "🛠️ 工單助手",
     chatIntro: "你好！我是接入演示的 AI 助手。有設施問題想諮詢，直接問我吧。",
     chatPlaceholder: "輸入訊息，例如：冷氣機漏水怎麼辦？",
     send: "傳送",
+    assistantIntro: "我是工單助手：告訴我設施問題（位置、情況、緊急程度），我會先查重、再幫你直接建立工單。",
+    assistantPlaceholder: "例：YKM 4樓咖啡區冷氣漏水，地上全是水，比較緊急",
+    stepCreate: "已建立工單",
+    stepDup: "查重：找到",
+    stepDupUnit: "組重複",
+    stepTrack: "工單狀態",
+    stepZones: "已獲取區域列表",
+    stepUnknown: "工具",
+    assistantErr: "工單助手出錯了：",
     classifyHint: "輸入一段報修描述，AI 會把它歸到 14 個設施分組之一（SIGN / CLEAN / SECU / AUTO / EVENT / HVAC / SAFE / MOVE / RENO / LAND / LOCK / MAIL / KEY / OTHR）。",
     classifyPlaceholder: "輸入報修描述…",
     classifyBtn: "AI 分類",
@@ -251,12 +295,24 @@ fetch("/api/health").then(r => r.json()).then(d => {
 });
 
 /* ================= Tab 切换 ================= */
+let assistantTracked = false;
+function trackAssistantEvent(event, metadata) {
+  fetch("/api/analytics", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({event: event, page: "assistant", metadata: metadata || {}})
+  }).catch(() => {});
+}
 document.querySelectorAll(".tab").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
     btn.classList.add("active");
     $("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "assistant" && !assistantTracked) {
+      assistantTracked = true;
+      trackAssistantEvent("assistant_opened");
+    }
   });
 });
 
@@ -344,6 +400,73 @@ $("classifyBtn").addEventListener("click", async () => {
   } catch (err) {
     lastClassify = {error: t("networkError") + err.message};
     renderClassify();
+  }
+});
+
+/* ================= 工单助手 ================= */
+function appendAssistantMsg(role, text) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  wrap.appendChild(bubble);
+  $("assistantLog").appendChild(wrap);
+  $("assistantLog").scrollTop = $("assistantLog").scrollHeight;
+  return bubble;
+}
+
+function stepText(s) {
+  const r = s.result || {};
+  if (s.status !== "ok") return "❌ " + s.tool + ": " + (r.error || t("assistantErr"));
+  switch (s.tool) {
+    case "create_ticket": return "✅ " + t("stepCreate") + " " + (r.code || "");
+    case "find_duplicates": return "✅ " + t("stepDup") + " " + (r.count || 0) + " " + t("stepDupUnit");
+    case "track_ticket": return "✅ " + t("stepTrack") + "：" + (r.status || "");
+    case "get_zones": return "✅ " + t("stepZones");
+    default: return "✅ " + t("stepUnknown") + " " + s.tool;
+  }
+}
+
+function appendSteps(steps) {
+  if (!steps || !steps.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble stepbox";
+  steps.forEach(s => {
+    const line = document.createElement("div");
+    line.className = "step";
+    line.textContent = stepText(s);
+    bubble.appendChild(line);
+  });
+  wrap.appendChild(bubble);
+  $("assistantLog").appendChild(wrap);
+  $("assistantLog").scrollTop = $("assistantLog").scrollHeight;
+}
+
+$("assistantForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("assistantText").value.trim();
+  if (!text) return;
+  appendAssistantMsg("user", text);
+  $("assistantText").value = "";
+  const bubble = appendAssistantMsg("assistant", t("thinking"));
+  try {
+    const resp = await fetch("/api/assistant", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({messages: [{role: "user", content: text}]})
+    });
+    const data = await resp.json();
+    if (data.error) {
+      bubble.textContent = t("assistantErr") + data.error;
+    } else {
+      bubble.textContent = data.reply;
+      appendSteps(data.steps);
+    }
+  } catch (err) {
+    bubble.textContent = t("networkError") + err.message;
   }
 });
 
