@@ -53,6 +53,39 @@ def api_classify():
         return jsonify(error=f"分类失败: {exc}"), 502
 
 
+@app.post("/api/analytics")
+def api_analytics_forward():
+    """前端埋点转发：写入主系统 analytics（白名单校验在 assistant_tools.track_event 内）。"""
+    from assistant_tools import track_event
+    data = request.get_json(force=True, silent=True) or {}
+    track_event(
+        str(data.get("event") or ""),
+        page=str(data.get("page") or "assistant"),
+        metadata=data.get("metadata") or {},
+    )
+    return jsonify(ok=True)
+
+
+@app.post("/api/assistant")
+def api_assistant():
+    """工单助手：system prompt + function calling，可创建/查重/追踪工单。"""
+    from assistant_tools import track_event
+
+    data = request.get_json(force=True, silent=True) or {}
+    messages = data.get("messages") or []
+    image_url = (data.get("image_url") or "").strip()  # 预留视觉通道
+    if not messages or not any(m.get("content") for m in messages):
+        return jsonify(error="messages 不能为空"), 400
+    track_event("assistant_message", page="assistant",
+                metadata={"turns": len(messages)})
+    try:
+        return jsonify(llm_client.assistant(messages, image_url=image_url))
+    except Exception as exc:
+        track_event("assistant_error", page="assistant",
+                    metadata={"error": str(exc)[:200]})
+        return jsonify(error=f"工单助手调用失败: {exc}"), 502
+
+
 if __name__ == "__main__":
     # 云端部署（Render/Railway 等）会注入 $PORT；本地无该变量时回退到 config.PORT（5050）
     app.run(host="0.0.0.0", port=config.PORT, debug=False)
