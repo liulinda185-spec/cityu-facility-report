@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CityU Facility Report · AI 演示台</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="stylesheet" href="/static/assistant.css">
 </head>
 <body>
 <header class="topbar">
@@ -78,7 +78,7 @@
 </main>
 
 <footer>
-  <p data-i18n="footer">LEAD Scheme 项目 · Flask + LLM 接入演示 · 完整流程：提交描述 → AI 分类/对话 → 返回结果</p>
+  <p data-i18n="footer">LEAD Scheme 项目 · FastAPI 单服务内嵌 LLM · 完整流程：提交描述 → AI 分类/对话 → 返回结果</p>
 </footer>
 
 <script>
@@ -124,7 +124,7 @@ const I18N = {
     confidenceLabel: "置信度：",
     groupHeader: "分组",
     probHeader: "概率",
-    footer: "LEAD Scheme 项目 · Flask + LLM 接入演示 · 完整流程：提交描述 → AI 分类/对话 → 返回结果",
+    footer: "LEAD Scheme 项目 · FastAPI 单服务内嵌 LLM · 完整流程：提交描述 → AI 分类/对话 → 返回结果",
     backend_openai: "OpenAI 兼容 API（DeepSeek）",
     backend_local_model: "本地训练模型 (ml/model.pkl)",
     backend_mock: "模拟模式",
@@ -174,7 +174,7 @@ const I18N = {
     confidenceLabel: "Confidence: ",
     groupHeader: "Group",
     probHeader: "Probability",
-    footer: "LEAD Scheme project · Flask + LLM demo · Flow: submit description → AI classify/chat → get result",
+    footer: "LEAD Scheme project · FastAPI · LLM inside the same service · Flow: submit description → AI classify/chat → get result",
     backend_openai: "OpenAI-compatible API (DeepSeek)",
     backend_local_model: "Trained local model (ml/model.pkl)",
     backend_mock: "Mock mode",
@@ -224,7 +224,7 @@ const I18N = {
     confidenceLabel: "置信度：",
     groupHeader: "分組",
     probHeader: "機率",
-    footer: "LEAD Scheme 項目 · Flask + LLM 接入演示 · 完整流程：提交描述 → AI 分類/對話 → 返回結果",
+    footer: "LEAD Scheme 項目 · FastAPI · 單一服務內嵌 LLM · 完整流程：提交描述 → AI 分類/對話 → 返回結果",
     backend_openai: "OpenAI 兼容 API（DeepSeek）",
     backend_local_model: "本地訓練模型 (ml/model.pkl)",
     backend_mock: "模擬模式",

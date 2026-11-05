@@ -1,5 +1,7 @@
-# Render Blueprint - CityU Facility Report (main) + LLM demo
-# Import via: dashboard.render.com -> New + -> Blueprint (select this repo)
+# Render Blueprint — ONE service.
+# The assistant used to be a second Flask service on port 5050; it now runs
+# inside the main app at /assistant, so there is a single URL, a single
+# database and a single token to manage.
 databases:
   - name: cityu-facility-db
     databaseName: cityu_facility
@@ -14,7 +16,7 @@ services:
     plan: free
     region: oregon
     rootDir: .
-    buildCommand: pip install --prefer-binary -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
+    buildCommand: pip install --prefer-binary -r requirements.txt && python ml/train.py
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
@@ -34,19 +36,10 @@ services:
         sync: false
       - key: PILOT_CATCHALL
         sync: false
-
-  - type: web
-    name: cityu-llm-demo
-    runtime: python
-    plan: free
-    region: oregon
-    rootDir: .
-    buildCommand: pip install --prefer-binary -r requirements.txt -r llm_webapp/requirements.txt && python ml/train.py
-    startCommand: python llm_webapp/app.py
-    healthCheckPath: /api/health
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.10"
+      # --- assistant / watchtower ---
+      # openai + a key turns on chat, ticket tools and model-written briefs.
+      # Leave CHAT_BACKEND=mock and the platform still works: the watchtower
+      # falls back to its rules, which need no key and no tokens.
       - key: CHAT_BACKEND
         value: openai
       - key: CLASSIFY_BACKEND

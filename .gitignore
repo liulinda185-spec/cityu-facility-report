@@ -10,8 +10,17 @@ facility_report.db-shm
 app/uploads/*
 !app/uploads/.gitkeep
 llm_webapp/.env
+.env
 server_*.log
 llm_webapp/server*.log
+ml/model.pkl
+
+# Local scratch: screenshots, fetched HTML, one-off checks
+_preview/
+_shots/
+
+# Contains a live-looking token from an earlier run; rotate before ever publishing it
+test_online_pg.py
 
 # OS
 .DS_Store

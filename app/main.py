@@ -2,13 +2,20 @@
 import os, uuid
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, Response, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_db, seed_lookups, update_zone_labels, get_conn, next_ticket_code, UPLOAD_DIR
 from .ai import classify, suggest_categories, reseed_categories
 from .emailer import send
+from .analytics import (MAX_BATCH, SESSION_COOKIE, SESSION_MAX_AGE, new_session,
+                        prune, record, safe_record, summary, valid_session)
+from .dashboard import render_dashboard, render_denied
+from .assistant import config as llm_conf
+from .assistant import llm as llm_mod
+from .assistant.tools import Api
+from . import monitor
 
 app = FastAPI(title="CityU Facility Report")
 BASE = Path(__file__).resolve().parent
@@ -80,20 +87,140 @@ def startup():
     seed_lookups()
     update_zone_labels()
     reseed_categories()
+    prune()
+
+# ---------- Session identity for analytics ----------
+
+def session_of(request: Request, response: Response) -> str:
+    """First-party, anonymous, 30-day session id.
+
+    It is the join key that makes a funnel possible (view -> start -> submit).
+    Stored as a cookie only; no IP address or user id is kept anywhere.
+    """
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not valid_session(sid):
+        sid = new_session()
+        response.set_cookie(
+            SESSION_COOKIE, sid,
+            max_age=SESSION_MAX_AGE, httponly=False, samesite="lax",
+            path="/", secure=request.url.scheme == "https",
+        )
+    return sid
 
 # ---------- Reporter pages ----------
 
 @app.get("/", response_class=HTMLResponse)
-def index():
+def index(request: Request, response: Response):
+    session_of(request, response)  # cookie before the first beacon, so visit #1 is attributable
     return (BASE / "static" / "index.html").read_text(encoding="utf-8")
 
 @app.get("/track", response_class=HTMLResponse)
-def track_page():
+def track_page(request: Request, response: Response):
+    session_of(request, response)
     return (BASE / "static" / "track.html").read_text(encoding="utf-8")
 
 @app.get("/officer", response_class=HTMLResponse)
-def officer_page():
+def officer_page(request: Request, response: Response):
+    session_of(request, response)
     return (BASE / "static" / "officer.html").read_text(encoding="utf-8")
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_page(request: Request, response: Response, days: int = 14, token: str = ""):
+    """Operations dashboard — server-rendered so it survives a weak network."""
+    session_of(request, response)
+    if token != OFFICER_TOKEN:
+        return HTMLResponse(render_denied(), status_code=403)
+    window = max(1, min(days, 90))
+    return HTMLResponse(render_dashboard(summary(window), window, token, monitor.generate(window)))
+
+# ---------- Assistant (formerly a separate Flask service) ----------
+# These handlers are deliberately *sync* (def, not async def): they block on
+# model calls and on self-requests to /api/reports, and running them in the
+# threadpool keeps the event loop free to serve those nested calls.
+
+@app.get("/assistant", response_class=HTMLResponse)
+def assistant_page(request: Request, response: Response):
+    """The chat page now lives in this app, not in a second deployment."""
+    sid = session_of(request, response)
+    safe_record("assistant_opened", session=sid, page="assistant")
+    return (BASE / "static" / "assistant.html").read_text(encoding="utf-8")
+
+@app.get("/api/health")
+def api_health():
+    return {
+        "ok": True,
+        "chat_backend": llm_conf.CHAT_BACKEND,
+        "classify_backend": llm_conf.CLASSIFY_BACKEND,
+        "llm_ready": llm_conf.llm_ready(),
+        "monitor": "llm" if llm_conf.llm_ready() else "rules",
+    }
+
+@app.post("/api/chat")
+def api_chat(request: Request, response: Response, payload: dict | None = Body(default=None)):
+    data = payload or {}
+    messages = data.get("messages") or []
+    if not messages or not any(m.get("content") for m in messages):
+        raise HTTPException(400, "messages 不能为空")
+    sid = session_of(request, response)
+    safe_record("assistant_message", session=sid, page="assistant",
+                props={"turns": len(messages)})
+    try:
+        return llm_mod.chat(messages)
+    except Exception as exc:
+        safe_record("assistant_error", session=sid, page="assistant",
+                    props={"error_type": type(exc).__name__})
+        raise HTTPException(502, f"调用后端失败: {exc}")
+
+@app.post("/api/classify")
+def api_classify(payload: dict | None = Body(default=None)):
+    text = str((payload or {}).get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text 不能为空")
+    try:
+        return llm_mod.classify(text)
+    except Exception as exc:
+        raise HTTPException(502, f"分类失败: {exc}")
+
+@app.post("/api/assistant")
+def api_assistant(request: Request, response: Response, payload: dict | None = Body(default=None)):
+    """Ticket assistant — tool calls hit this same server, no public round-trip."""
+    data = payload or {}
+    messages = data.get("messages") or []
+    if not messages or not any(m.get("content") for m in messages):
+        raise HTTPException(400, "messages 不能为空")
+    sid = session_of(request, response)
+    safe_record("assistant_message", session=sid, page="assistant",
+                props={"turns": len(messages)})
+    api = Api(str(request.base_url), OFFICER_TOKEN)
+    try:
+        result = llm_mod.assistant(messages, api, image_url=str(data.get("image_url") or "").strip())
+    except Exception as exc:
+        safe_record("assistant_error", session=sid, page="assistant",
+                    props={"error_type": type(exc).__name__})
+        raise HTTPException(502, f"工单助手调用失败: {exc}")
+    for step in result.get("steps", []):
+        safe_record("assistant_tool_call", session=sid, page="assistant",
+                    props={"tool": step.get("tool"), "status": step.get("status")})
+    return result
+
+# ---------- Watchtower: the model reading the platform ----------
+
+@app.get("/api/monitor/brief")
+def api_monitor_brief(request: Request, response: Response, days: int = 7,
+                      token: str = "", refresh: int = 0):
+    session_of(request, response)
+    if token != OFFICER_TOKEN:
+        raise HTTPException(403)
+    return monitor.generate(max(1, min(days, 90)), force=bool(refresh))
+
+@app.post("/api/monitor/refresh")
+def api_monitor_refresh(days: int = 7, token: str = ""):
+    """Re-run the analysis from the dashboard's refresh button."""
+    if token != OFFICER_TOKEN:
+        raise HTTPException(403)
+    window = max(1, min(days, 90))
+    monitor.generate(window, force=True)
+    return RedirectResponse(f"/dashboard?days={window}&token={token}", status_code=303)
 
 # ---------- Lookup endpoints ----------
 
@@ -104,30 +231,78 @@ def api_zones():
     conn.close()
     return [dict(r) for r in rows]
 
-@app.post("/api/analytics")
-async def analytics_event(request: Request):
-    """Record a small allowlisted set of events, without report content or identity."""
-    import json
+@app.post("/api/events")
+async def collect_events(request: Request, response: Response):
+    """Batch receiver for the browser tracker.
+
+    The browser buffers events and flushes them as one beacon, so a wall-mounted
+    tablet does not fire a request per keystroke. Names are re-checked here, the
+    batch is capped, and unknown metadata keys never reach the table.
+    """
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid event payload")
-    event_name = str(payload.get("event", ""))
-    allowed = {"page_view", "report_submitted", "ticket_claimed", "ticket_resolved", "category_corrected", "ticket_tracked",
-               "assistant_opened", "assistant_message", "assistant_tool_call", "assistant_ticket_created",
-               "assistant_duplicates_found", "assistant_error"}
-    if event_name not in allowed:
-        raise HTTPException(400, "Unsupported analytics event")
-    page = str(payload.get("page", ""))[:32]
-    ticket_code = str(payload.get("ticket_code", ""))[:32] or None
-    metadata = payload.get("metadata", {})
-    safe_metadata = {k: metadata[k] for k in ("priority", "group", "status") if isinstance(metadata, dict) and k in metadata}
+    items = payload.get("events") if isinstance(payload, dict) else None
+    if isinstance(payload, dict) and not isinstance(items, list):
+        items = [payload]
+    if not isinstance(items, list) or not items:
+        raise HTTPException(400, "Expected a non-empty events list")
+    if len(items) > MAX_BATCH:
+        raise HTTPException(400, f"At most {MAX_BATCH} events per batch")
+
+    sid = session_of(request, response)
+    ua = request.headers.get("user-agent", "")
+    accepted = 0
     conn = get_conn()
-    conn.execute("INSERT INTO analytics_events (event_name,page,ticket_code,metadata,created_at) VALUES (?,?,?,?,?)",
-                 (event_name, page, ticket_code, json.dumps(safe_metadata), datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
+    try:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if record(item.get("event", ""), session=sid, page=item.get("page", ""),
+                      ticket_code=(item.get("ticket_code") or item.get("code")),
+                      props=item.get("props"), ua=ua, conn=conn):
+                accepted += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise HTTPException(400, "Could not store events")
+    finally:
+        conn.close()
+    if not accepted:
+        raise HTTPException(400, "No supported events in batch")
+    return {"ok": True, "accepted": accepted}
+
+@app.post("/api/analytics")
+async def analytics_event(request: Request, response: Response):
+    """Legacy single-event endpoint, kept for the LLM forwards and smoke scripts.
+
+    It now writes through the same tracker as /api/events, so old clients pick up
+    session ids and device class without changing their call.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid event payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid event payload")
+    ok = record(
+        payload.get("event", ""),
+        session=session_of(request, response),
+        page=payload.get("page", ""),
+        ticket_code=payload.get("ticket_code"),
+        props=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else payload.get("props"),
+        ua=request.headers.get("user-agent", ""),
+    )
+    if not ok:
+        raise HTTPException(400, "Unsupported analytics event")
     return {"ok": True}
+
+@app.get("/api/analytics/summary")
+def analytics_summary(days: int = 14, token: str = ""):
+    if token != OFFICER_TOKEN:
+        raise HTTPException(403, "Bad officer token")
+    return summary(days)
 
 @app.get("/api/category-options")
 def category_options(token: str = ""):
@@ -149,6 +324,7 @@ def api_suggest(text: str = "", symptom: str = "", asset_code: str = ""):
 @app.post("/api/reports")
 async def create_report(
     request: Request,
+    response: Response,
     zone_code: str = Form(...),
     asset_code: str = Form(""),
     symptom: str = Form(""),
@@ -187,9 +363,6 @@ async def create_report(
     ticket_id = conn.execute("SELECT id FROM tickets WHERE code=?", (code,)).fetchone()["id"]
     conn.execute("INSERT INTO status_events (ticket_id, from_status, to_status, note, created_at) VALUES (?,?,?,?,?)",
                  (ticket_id, None, "NEW", "Ticket submitted", now))
-    import json
-    conn.execute("INSERT INTO analytics_events (event_name,page,ticket_code,metadata,created_at) VALUES (?,?,?,?,?)",
-                 ("report_submitted", "reporter", code, json.dumps({"priority": priority, "group": group}), now))
     conn.commit()
 
     # Route email: if specific category chosen, use its team_email; else group inbox
@@ -211,6 +384,17 @@ async def create_report(
         }
         team_email = group_inbox.get(group, "fm-general@cityu.local")
     conn.close()
+
+    # Authoritative: the row is committed, so this counts as a real submission.
+    safe_record(
+        "report_submitted",
+        session=session_of(request, response),
+        page="index",
+        ticket_code=code,
+        props={"priority": priority, "group": group,
+               "has_photo": bool(photo_path), "source": "web"},
+        ua=request.headers.get("user-agent", ""),
+    )
 
     body = f"""New facility report {code}
 Zone: {zone_code}
@@ -234,19 +418,26 @@ Claim: http://host/officer
 # ---------- Track ticket ----------
 
 @app.get("/api/reports/{code}")
-def get_report(code: str):
+def get_report(code: str, request: Request, response: Response):
     conn = get_conn()
     t = conn.execute("SELECT * FROM tickets WHERE code=?", (code,)).fetchone()
     if not t:
+        conn.close()
+        safe_record("track_lookup", session=session_of(request, response), page="track",
+                    ticket_code=code, props={"found": False},
+                    ua=request.headers.get("user-agent", ""))
         raise HTTPException(404, "Ticket not found")
     events = conn.execute("SELECT * FROM status_events WHERE ticket_id=? ORDER BY created_at", (t["id"],)).fetchall()
     conn.close()
+    safe_record("track_lookup", session=session_of(request, response), page="track",
+                ticket_code=code, props={"found": True, "status": t["status"]},
+                ua=request.headers.get("user-agent", ""))
     return {"ticket": dict(t), "events": [dict(e) for e in events]}
 
 # ---------- Officer endpoints ----------
 
 @app.get("/api/queue")
-def queue(status: str = "NEW", token: str = ""):
+def queue(request: Request, response: Response, status: str = "NEW", token: str = ""):
     if token != OFFICER_TOKEN:
         raise HTTPException(403, "Bad officer token")
     conn = get_conn()
@@ -262,10 +453,13 @@ def queue(status: str = "NEW", token: str = ""):
         created_at
     """, (status,)).fetchall()
     conn.close()
+    safe_record("officer_queue_view", session=session_of(request, response), page="officer",
+                props={"status": status, "count": len(rows)},
+                ua=request.headers.get("user-agent", ""))
     return [dict(r) for r in rows]
 
 @app.get("/api/duplicates")
-def detect_duplicates(token: str = "", threshold: float = 0.34, days: int = 30,
+def detect_duplicates(request: Request, response: Response, token: str = "", threshold: float = 0.34, days: int = 30,
                       query_text: str = "", query_zone: str = ""):
     """重复检测。
 
@@ -303,6 +497,9 @@ def detect_duplicates(token: str = "", threshold: float = 0.34, days: int = 30,
                 })
         matches.sort(key=lambda m: -m["similarity"])
         conn.close()
+        safe_record("officer_duplicates_check", session=session_of(request, response),
+                    page="officer", props={"mode": "precheck", "count": len(matches)},
+                    ua=request.headers.get("user-agent", ""))
         return {"query": query_text, "matches": matches}
 
     # 聚类模式：仅在完全相同 zone 与分类组内找重复
@@ -326,10 +523,13 @@ def detect_duplicates(token: str = "", threshold: float = 0.34, days: int = 30,
             assigned.update(x["ticket"]["id"] for x in cluster)
             clusters.append({"zone_code": first.get("zone_code"), "group_code": first.get("group_code"), "tickets": cluster})
     conn.close()
+    safe_record("officer_duplicates_check", session=session_of(request, response),
+                page="officer", props={"mode": "clusters", "count": len(clusters)},
+                ua=request.headers.get("user-agent", ""))
     return clusters
 
 @app.post("/api/compilations")
-async def compile_tickets(request: Request, token: str = Form(...)):
+async def compile_tickets(request: Request, response: Response, token: str = Form(...)):
     if token != OFFICER_TOKEN:
         raise HTTPException(403, "Bad officer token")
     form = await request.form()
@@ -354,10 +554,13 @@ async def compile_tickets(request: Request, token: str = Form(...)):
         conn.execute("INSERT INTO compilation_members (compilation_id,ticket_id,similarity) VALUES (?,?,?)", (compilation_id,t["id"],score))
     conn.commit()
     conn.close()
+    safe_record("officer_compilation", session=session_of(request, response), page="officer",
+                props={"count": len(tickets), "group": tickets[0]["group_code"], "zone": tickets[0]["zone_code"]},
+                ua=request.headers.get("user-agent", ""))
     return {"ok": True, "compilation_id": compilation_id, "ticket_count": len(tickets)}
 
 @app.post("/api/queue/{code}/claim")
-def claim(code: str, token: str = Form(...)):
+def claim(code: str, request: Request, response: Response, token: str = Form(...)):
     if token != OFFICER_TOKEN: raise HTTPException(403)
     conn = get_conn()
     t = conn.execute("SELECT * FROM tickets WHERE code=?", (code,)).fetchone()
@@ -369,16 +572,17 @@ def claim(code: str, token: str = Form(...)):
                  (datetime.now().isoformat(), tid))
     conn.execute("INSERT INTO status_events (ticket_id, from_status, to_status, note, created_at) VALUES (?,?,?,?,?)",
                  (tid, "NEW", "ASSIGNED", "Claimed by officer", datetime.now().isoformat()))
-    conn.execute("INSERT INTO analytics_events (event_name,page,ticket_code,metadata,created_at) VALUES (?,?,?,?,?)",
-                 ("ticket_claimed", "officer", code, "{}", datetime.now().isoformat()))
     conn.commit(); conn.close()
+    safe_record("officer_claim", session=session_of(request, response), page="officer",
+                ticket_code=code, props={"priority": t["priority"], "group": t["group_code"]},
+                ua=request.headers.get("user-agent", ""))
     if email:
         send(email, f"Your report {code} is being worked on",
              f"Ticket {code}\nAn officer has claimed your report.")
     return {"ok": True}
 
 @app.post("/api/queue/{code}/resolve")
-def resolve(code: str, note: str = Form(""), token: str = Form(...)):
+def resolve(code: str, request: Request, response: Response, note: str = Form(""), token: str = Form(...)):
     if token != OFFICER_TOKEN: raise HTTPException(403)
     conn = get_conn()
     t = conn.execute("SELECT * FROM tickets WHERE code=?", (code,)).fetchone()
@@ -390,16 +594,18 @@ def resolve(code: str, note: str = Form(""), token: str = Form(...)):
                  (datetime.now().isoformat(), tid))
     conn.execute("INSERT INTO status_events (ticket_id, from_status, to_status, note, created_at) VALUES (?,?,?,?,?)",
                  (tid, "ASSIGNED", "RESOLVED", note, datetime.now().isoformat()))
-    conn.execute("INSERT INTO analytics_events (event_name,page,ticket_code,metadata,created_at) VALUES (?,?,?,?,?)",
-                 ("ticket_resolved", "officer", code, "{}", datetime.now().isoformat()))
     conn.commit(); conn.close()
+    safe_record("officer_resolve", session=session_of(request, response), page="officer",
+                ticket_code=code, props={"from_status": "ASSIGNED", "to_status": "RESOLVED",
+                                         "has_note": bool(note)},
+                ua=request.headers.get("user-agent", ""))
     if email:
         send(email, f"Your report {code} is resolved",
              f"Ticket {code} has been marked resolved.\nNote: {note}")
     return {"ok": True}
 
 @app.post("/api/queue/{code}/recategorize")
-def recategorize(code: str, new_category: str = Form(...), token: str = Form(...)):
+def recategorize(code: str, request: Request, response: Response, new_category: str = Form(...), token: str = Form(...)):
     """Officer corrects category — logs training data."""
     if token != OFFICER_TOKEN: raise HTTPException(403)
     conn = get_conn()
@@ -411,7 +617,8 @@ def recategorize(code: str, new_category: str = Form(...), token: str = Form(...
                  (new_category, datetime.now().isoformat(), t["id"]))
     conn.execute("INSERT INTO training_examples (text, label, source) VALUES (?,?,?)",
                  (t["description"], new_category, "officer_correction"))
-    conn.execute("INSERT INTO analytics_events (event_name,page,ticket_code,metadata,created_at) VALUES (?,?,?,?,?)",
-                 ("category_corrected", "officer", code, "{}", datetime.now().isoformat()))
     conn.commit(); conn.close()
+    safe_record("officer_recategorize", session=session_of(request, response), page="officer",
+                ticket_code=code, props={"group": t["group_code"], "category": new_category},
+                ua=request.headers.get("user-agent", ""))
     return {"ok": True}

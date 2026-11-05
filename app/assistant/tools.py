@@ -1,40 +1,51 @@
-"""工单助手工具：通过主系统 API 创建/查重/追踪工单，并上报埋点事件。
+"""Tickets assistant tools — they call this same app, not a second deployment.
 
-工具被 llm_client.assistant 的 function calling 循环调用；
-埋点走主系统 POST /api/analytics（fire-and-forget，失败不影响主流程）。
+`Api` is a minimal self-client: base URL comes from the incoming request, so it
+works on localhost:8013, on Render, or behind any proxy without configuration.
 """
 from __future__ import annotations
 
-import requests
-
-import config
-
-# ---------------------------------------------------------------- 埋点
-
-_EVENT_WHITELIST = {
-    "assistant_opened", "assistant_message", "assistant_tool_call",
-    "assistant_ticket_created", "assistant_duplicates_found", "assistant_error",
-}
+import json
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
-def track_event(event: str, page: str = "assistant", metadata: dict | None = None):
-    if event not in _EVENT_WHITELIST:
-        return
-    try:
-        requests.post(
-            f"{config.FACILITY_API_BASE}/api/analytics",
-            json={"event": event, "page": page, "metadata": metadata or {}},
-            timeout=5,
+class Api:
+    def __init__(self, base_url: str, token: str | None = None):
+        self.base = base_url.rstrip("/")
+        self.token = token if token is not None else os.getenv("OFFICER_TOKEN", "")
+        self.calls: list[str] = []
+
+    def _open(self, path: str, data: bytes | None = None, headers: dict | None = None, timeout: int = 30):
+        req = urllib.request.Request(self.base + path, data=data, method="POST" if data else "GET")
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    def get(self, path: str, params: dict | None = None):
+        query = ("?" + urllib.parse.urlencode(params)) if params else ""
+        status, body = self._open(path + query)
+        if status != 200:
+            raise RuntimeError(f"{path} → HTTP {status}: {body[:200]!r}")
+        return json.loads(body.decode("utf-8"))
+
+    def post_form(self, path: str, data: dict):
+        status, body = self._open(
+            path, urllib.parse.urlencode(data).encode(),
+            {"Content-Type": "application/x-www-form-urlencoded"},
         )
-    except Exception:
-        pass  # 埋点失败不阻断主流程
+        if status != 200:
+            raise RuntimeError(f"{path} → HTTP {status}: {body[:200]!r}")
+        return json.loads(body.decode("utf-8"))
 
 
-# ---------------------------------------------------------------- 工具实现
-
-
-def create_ticket(args: dict) -> dict:
-    """按 LLM 提取的字段在主系统创建工单 → {"code","group","confidence"}"""
+def create_ticket(args: dict, api: Api) -> dict:
     payload = {
         "zone_code": str(args.get("zone_code") or ""),
         "asset_code": str(args.get("asset_code") or ""),
@@ -44,68 +55,52 @@ def create_ticket(args: dict) -> dict:
         "reporter_email": str(args.get("reporter_email") or ""),
         "category_code": str(args.get("category_code") or ""),
     }
-    resp = requests.post(f"{config.FACILITY_API_BASE}/api/reports", data=payload, timeout=30)
-    resp.raise_for_status()
-    out = resp.json()
-    track_event("assistant_ticket_created",
-                metadata={"code": out.get("code"), "group": out.get("group")})
+    out = api.post_form("/api/reports", payload)
     return {"ok": True, "code": out.get("code"), "group": out.get("group"),
             "confidence": out.get("confidence")}
 
 
-def find_duplicates(args: dict) -> dict:
-    """查重复：预检模式（新描述 vs 库内工单）+ 库内聚类，→ {"count", "matches", "clusters"}"""
-    if not config.FACILITY_TOKEN:
-        return {"count": 0, "matches": [], "error": "未配置 FACILITY_TOKEN，无法查重"}
+def find_duplicates(args: dict, api: Api) -> dict:
+    if not api.token:
+        return {"count": 0, "matches": [], "error": "未配置 OFFICER_TOKEN，无法查重"}
     params = {
-        "token": config.FACILITY_TOKEN,
+        "token": api.token,
         "threshold": args.get("threshold", 0.34),
         "days": args.get("days", 30),
         "query_text": args.get("description", ""),
         "query_zone": args.get("zone_code", ""),
     }
-    resp = requests.get(f"{config.FACILITY_API_BASE}/api/duplicates", params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    data = api.get("/api/duplicates", params)
     if isinstance(data, dict) and "matches" in data:
-        matches = data["matches"]
-        simplified = [{
+        matches = [{
             "code": m["ticket"]["code"], "status": m["ticket"]["status"],
             "zone_code": m["ticket"]["zone_code"], "group_code": m["ticket"]["group_code"],
             "description": m["ticket"]["description"], "similarity": m["similarity"],
-        } for m in matches]
-        track_event("assistant_duplicates_found", metadata={"matches": len(simplified)})
-        return {"count": len(simplified), "matches": simplified, "clusters": []}
-    clusters = data if isinstance(data, list) else []
-    track_event("assistant_duplicates_found", metadata={"clusters": len(clusters)})
-    return {"count": len(clusters), "matches": [], "clusters": clusters}
+        } for m in data["matches"]]
+        return {"count": len(matches), "matches": matches, "clusters": []}
+    return {"count": len(data) if isinstance(data, list) else 0, "matches": [], "clusters": data}
 
 
-def track_ticket(args: dict) -> dict:
-    """按工单编号查进度 → {"code","status","group","priority","description"}"""
+def track_ticket(args: dict, api: Api) -> dict:
     code = str(args.get("code") or "")
     if not code:
         return {"error": "缺少工单编号 code"}
-    resp = requests.get(f"{config.FACILITY_API_BASE}/api/reports/{code}", timeout=30)
-    if resp.status_code == 404:
-        return {"error": f"工单 {code} 不存在"}
-    resp.raise_for_status()
-    t = resp.json().get("ticket", {})
+    try:
+        data = api.get(f"/api/reports/{urllib.parse.quote(code)}")
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            return {"error": f"工单 {code} 不存在"}
+        raise
+    t = data.get("ticket", {})
     return {"code": t.get("code"), "status": t.get("status"), "group": t.get("group_code"),
             "priority": t.get("priority"),
             "description": (t.get("description") or "")[:120],
             "updated_at": t.get("updated_at")}
 
 
-def get_zones(args: dict) -> dict:
-    """列出可用位置代码 → {"zones": [{"code","label"}]}"""
-    resp = requests.get(f"{config.FACILITY_API_BASE}/api/zones", timeout=30)
-    resp.raise_for_status()
-    zones = resp.json()
+def get_zones(args: dict, api: Api) -> dict:
+    zones = api.get("/api/zones")
     return {"zones": [{"code": z["code"], "label": z["label"]} for z in zones]}
-
-
-# ---------------------------------------------------------------- 工具定义（OpenAI function calling schema）
 
 
 def _tool(name: str, description: str, properties: dict, required: list[str]) -> dict:
@@ -154,7 +149,7 @@ TOOL_DEFS = [
     ),
 ]
 
-_TOOL_IMPL = {
+_IMPL = {
     "create_ticket": create_ticket,
     "find_duplicates": find_duplicates,
     "track_ticket": track_ticket,
@@ -162,8 +157,8 @@ _TOOL_IMPL = {
 }
 
 
-def execute_tool(name: str, args: dict) -> dict:
-    fn = _TOOL_IMPL.get(name)
+def execute(name: str, args: dict, api: Api) -> dict:
+    fn = _IMPL.get(name)
     if fn is None:
         raise ValueError(f"未知工具: {name}")
-    return fn(args)
+    return fn(args, api)
