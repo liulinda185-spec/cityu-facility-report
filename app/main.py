@@ -23,7 +23,7 @@ def normalize_issue(value: str) -> set[str]:
     tokens = words - stop
     # 中文：连续汉字段做 bigram（去掉虚词后），让中文描述也能参与相似度
     cjk_stop = set("的了在是有就没都又很多少一下也还跟和与及或吗呢吧啊哦嗯请")
-    for seg in re.findall(r"[\u4e00-\u9fff]+", text):
+    for seg in re.findall(r"[\\u4e00-\\u9fff]+", text):
         seg = "".join(ch for ch in seg if ch not in cjk_stop)
         if len(seg) >= 2:
             tokens.update(seg[i:i + 2] for i in range(len(seg) - 1))
@@ -36,6 +36,34 @@ def similarity_score(left: str, right: str) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+def containment_score(left: str, right: str) -> float:
+    """短查询被长描述包含的程度：交集 / 较短词集大小。
+
+    纯 Jaccard 对长度差极敏感——一句 15 字的报修描述 vs 一条 40 字的
+    完整工单描述，即使说的是同一问题，Jaccard 也常低于 0.3。查重预检
+    关心的是「这段新描述的内容是否已被某条工单覆盖」，所以用包含度更合适。
+    要求至少 3 个共同词，避免「灯坏了」这种过短文本误命中。
+    """
+    a, b = normalize_issue(left), normalize_issue(right)
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    if inter < 3:
+        return 0.0
+    return inter / min(len(a), len(b))
+
+def zone_match(ticket_zone: str, query_zone: str) -> bool:
+    """区域匹配：完全相同，或一方是另一方的父区。
+
+    zone 编码是分层的（YKM-4-CONC 是父区，YKM-4-CONC-COFFEE 是其中的
+    咖啡车区）。用户说「4楼咖啡区」时模型可能给出父区也可能给出精确子区，
+    只要存在层级包含关系就应视为同一位置，否则会漏掉已存在的工单。
+    """
+    tz, qz = (ticket_zone or "").strip().lower(), (query_zone or "").strip().lower()
+    if not qz:
+        return True
+    return tz == qz or tz.startswith(qz + "-") or qz.startswith(tz + "-")
 
 # Security: no hardcoded default. Without OFFICER_TOKEN we generate a random
 # token and print it once, so an unconfigured public deployment cannot be
@@ -154,7 +182,7 @@ async def create_report(
                              symptom, impact, priority, status, description, photo_path,
                              reporter_email, ai_confidence, ai_predicted, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (code, zone_code, asset_code, final_category, group, symptom, impact, priority,
+    """, (code, zone_code, asset_code, final_category, symptom, impact, priority,
           "NEW", description, photo_path, reporter_email, conf, group, now, now))
     ticket_id = conn.execute("SELECT id FROM tickets WHERE code=?", (code,)).fetchone()["id"]
     conn.execute("INSERT INTO status_events (ticket_id, from_status, to_status, note, created_at) VALUES (?,?,?,?,?)",
@@ -258,11 +286,12 @@ def detect_duplicates(token: str = "", threshold: float = 0.34, days: int = 30,
         zone = (query_zone or "").strip().lower()
         matches = []
         for t in tickets:
-            t_zone = (t.get("zone_code") or "").strip().lower()
-            if zone and t_zone != zone:
+            if not zone_match(t.get("zone_code"), zone):
                 continue
             t_text = f"{(t.get('description') or '')} {(t.get('symptom') or '')}"
-            score = similarity_score(text, t_text)
+            # 两个分位：Jaccard 判「整体像不像」，containment 判「新描述是否已被
+            # 这条工单覆盖」。取较大者，短描述才不会被长工单描述稀释掉。
+            score = max(similarity_score(text, t_text), containment_score(text, t_text))
             if score >= threshold:
                 matches.append({
                     "ticket": {"code": t["code"], "status": t["status"],
