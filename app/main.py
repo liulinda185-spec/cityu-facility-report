@@ -41,9 +41,9 @@ def containment_score(left: str, right: str) -> float:
     """短查询被长描述包含的程度：交集 / 较短词集大小。
 
     纯 Jaccard 对长度差极敏感——一句 15 字的报修描述 vs 一条 40 字的
-    完整工单描述，即使说的是同一问题，Jaccard 也常低于 0.3。查重预检
-    关心的是「这段新描述的内容是否已被某条工单覆盖」，所以用包含度更合适。
-    要求至少 3 个共同词，避免「灯坏了」这种过短文本误命中。
+    完整工单描述，即使描述的是同一问题，Jaccard 也常低于 0.3。查重预检
+    关心的是"这段新描述的内容是否已被某条工单覆盖"，所以用包含度更合适。
+    要求至少 3 个共同词，避免"灯坏了"这种过短文本误命中。
     """
     a, b = normalize_issue(left), normalize_issue(right)
     if not a or not b:
@@ -57,8 +57,8 @@ def zone_match(ticket_zone: str, query_zone: str) -> bool:
     """区域匹配：完全相同，或一方是另一方的父区。
 
     zone 编码是分层的（YKM-4-CONC 是父区，YKM-4-CONC-COFFEE 是其中的
-    咖啡车区）。用户说「4楼咖啡区」时模型可能给出父区也可能给出精确子区，
-    只要存在层级包含关系就应视为同一位置，否则会漏掉已存在的工单。
+    咖啡车区）。用户说"4楼咖啡区"时模型可能给出父区也可能给出精确子区，
+    只要有一方的层级包含关系就应视为同一位置，否则会漏掉已存在的工单。
     """
     tz, qz = (ticket_zone or "").strip().lower(), (query_zone or "").strip().lower()
     if not qz:
@@ -289,8 +289,8 @@ def detect_duplicates(token: str = "", threshold: float = 0.34, days: int = 30,
             if not zone_match(t.get("zone_code"), zone):
                 continue
             t_text = f"{(t.get('description') or '')} {(t.get('symptom') or '')}"
-            # 两个分位：Jaccard 判「整体像不像」，containment 判「新描述是否已被
-            # 这条工单覆盖」。取较大者，短描述才不会被长工单描述稀释掉。
+            # 两个分位：Jaccard 判"整体像不像"，containment 判"新描述是否已被
+            # 这条工单覆盖"。取较大者，短描述才不会被长工单描述稀释掉。
             score = max(similarity_score(text, t_text), containment_score(text, t_text))
             if score >= threshold:
                 matches.append({
@@ -346,9 +346,9 @@ async def compile_tickets(request: Request, token: str = Form(...)):
     if len({t["zone_code"] for t in tickets}) != 1 or len({t["group_code"] for t in tickets}) != 1:
         conn.close()
         raise HTTPException(400, "Tickets must share the same area and issue group")
-    cur = conn.execute("INSERT INTO ticket_compilations (title,zone_code,group_code,created_at) VALUES (?,?,?,?)",
+    cur = conn.execute("INSERT INTO ticket_compilations (title,zone_code,group_code,created_at) VALUES (?,?,?,?) RETURNING id",
                        (f"{tickets[0]['group_code']} reports · {tickets[0]['zone_code']}", tickets[0]["zone_code"], tickets[0]["group_code"], datetime.now().isoformat()))
-    compilation_id = cur.lastrowid
+    compilation_id = cur.fetchone()[0]
     for t in tickets:
         score = max((similarity_score((t.get("description") or "") + " " + (t.get("symptom") or ""), (other.get("description") or "") + " " + (other.get("symptom") or "")) for other in tickets if other["id"] != t["id"]), default=1.0)
         conn.execute("INSERT INTO compilation_members (compilation_id,ticket_id,similarity) VALUES (?,?,?)", (compilation_id,t["id"],score))
@@ -415,4 +415,3 @@ def recategorize(code: str, new_category: str = Form(...), token: str = Form(...
                  ("category_corrected", "officer", code, "{}", datetime.now().isoformat()))
     conn.commit(); conn.close()
     return {"ok": True}
-
