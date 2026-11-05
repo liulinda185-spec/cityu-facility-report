@@ -197,6 +197,18 @@ class _PgCursor:
     def __init__(self, cur):
         self._cur = cur
 
+    def execute(self, sql, params=None):
+        stmt = _translate(sql)
+        if params is None:
+            self._cur.execute(stmt)
+        else:
+            self._cur.execute(stmt, params)
+        return self
+
+    def executemany(self, sql, seq):
+        self._cur.executemany(_translate(sql), list(seq))
+        return self
+
     def _wrap(self, row):
         if row is None:
             return None
