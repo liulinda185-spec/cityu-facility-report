@@ -182,7 +182,7 @@ async def create_report(
                              symptom, impact, priority, status, description, photo_path,
                              reporter_email, ai_confidence, ai_predicted, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (code, zone_code, asset_code, final_category, symptom, impact, priority,
+    """, (code, zone_code, asset_code, final_category, group, symptom, impact, priority,
           "NEW", description, photo_path, reporter_email, conf, group, now, now))
     ticket_id = conn.execute("SELECT id FROM tickets WHERE code=?", (code,)).fetchone()["id"]
     conn.execute("INSERT INTO status_events (ticket_id, from_status, to_status, note, created_at) VALUES (?,?,?,?,?)",
