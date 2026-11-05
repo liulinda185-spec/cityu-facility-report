@@ -2,6 +2,24 @@
 
 A usable MVP for the YKM 4/F Concourse pilot.
 
+## Live deployment
+
+- **App**: https://cityu-facility-report.onrender.com (Render free instance, Postgres attached)
+- **Reporter**: `/` · **Track**: `/track` · **Officer**: `/officer` · **Dashboard**: `/dashboard` · **Assistant**: `/assistant`
+
+**What it does now**
+
+- Public mobile reporting form: zone + one-line description + photo (magic-byte sniff, 5 MB cap) + self-reported impact → P1/P2/P3.
+- AI category routing: TF-IDF char n-grams + logistic regression, blended with weighted keywords; low-confidence tickets (<0.5) are flagged "needs officer review" and routed to the general inbox.
+- Officer console: sign in once with the officer token (12 h HttpOnly cookie), then claim / resolve / correct category / merge duplicates.
+- Feedback loop: every officer correction is folded back into the training set on the next Render deploy.
+- Watchtower monitor: always-on rules (aging, funnel drop, AI correction rate, silent tracker) + optional 3-sentence LLM summary (cached 6 h, ≤8 calls/day).
+- Anonymous funnel telemetry: one `fr_sid` cookie, server-side allowlisted events, no identity, no IP, 180-day prune.
+- Security: whitelisted public payload, two-layer rate limiting (429), generated upload names with `nosniff`, SMTP off the request path.
+
+**Where you see the telemetry** (funnel, AI correction rate, backlog aging):
+`/dashboard` — sign in at `/officer` first, then open `/dashboard`. Testers only *generate* the events; they can't see the numbers.
+
 ## 1. Run it (5 minutes)
 
 ```powershell
@@ -83,8 +101,9 @@ Upload into the DB later — for pilot, free-text asset code is enough.
 ```
 app/
   main.py          FastAPI routes
-  db.py            SQLite schema + seed
-  ai.py            Hybrid classifier (TF-IDF model + keyword evidence)
+  db.py            SQLite / Postgres schema + seed
+  ai.py            Hybrid classifier (TF-IDF + weighted keywords, low-confidence gate)
+  storage.py       Photo storage: S3-compatible R2 when configured, local disk fallback
   emailer.py       SMTP
   analytics.py     Anonymous event tracker + summary() aggregates
   dashboard.py     Server-rendered operations dashboard
@@ -148,14 +167,22 @@ Asset-code path (`AD-0142` etc.) bypasses the model entirely: 99% confidence.
 - [ ] QR code printed on YKM 4/F wall
 - [ ] FM officer tests for 1 week
 
-## 6. Next upgrades (after pilot)
+## 6. Next steps
 
-- Real asset register DB + OCR scan button
-- LLM fallback for low-confidence tickets
-- Recurrence dashboard ("AD-0142 failed 3×")
-- Photo vision model (CLIP zero-shot)
-- Migrate SQLite → Postgres
-- CityU SSO for officer login
+Before a wider pilot:
+
+- Rotate the leaked `OFFICER_TOKEN` (Render → Environment → edit value, Save Changes).
+- Set `OPENAI_API_KEY` (DeepSeek, `sk-…`) so `/assistant` and the LLM watchtower turn on.
+- Configure SMTP (`SMTP_USER` / `SMTP_PASS` / `FROM_ADDR`, Gmail app password) so reporters actually receive status emails.
+- Add R2 external storage for photos: code is ready (`app/storage.py`, S3-compatible) — just add `R2_BUCKET` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_ENDPOINT` / `R2_PUBLIC_BASE`. Without it, photos live on the Render disk and are wiped on every deploy.
+- Expand bilingual seed data: append real reports (EN + 中文) to `seed_training_data.csv`, retrain.
+
+Later:
+
+- Real asset register + OCR scan button.
+- LLM second-opinion for low-confidence tickets (prompt already exists).
+- Recurrence view ("AD-0142 failed 3×").
+- CityU SSO for officer login.
 
 ## 7. Operations dashboard and anonymous event tracking
 
