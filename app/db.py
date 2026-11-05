@@ -175,8 +175,9 @@ CREATE TABLE IF NOT EXISTS compilation_members (
 def _translate(sql: str) -> str:
     """把 SQLite 写法的 SQL 转成 Postgres 可执行形式。"""
     s = sql
-    # datetime('now', '-30 days')  →  (NOW() - ('-30 days')::interval)
-    s = re.sub(r"datetime\(\s*'now'\s*,\s*\?\s*\)", "(NOW() - (?)::interval)", s, flags=re.I)
+    # datetime('now', '-30 days')  →  (NOW() + ('-30 days')::interval)
+    # 注意用 +：绑定参数本身带负号，NOW() - interval '-30 days' 会变成往后推。
+    s = re.sub(r"datetime\(\s*'now'\s*,\s*\?\s*\)", "(NOW() + (?)::interval)", s, flags=re.I)
     was_or_ignore = bool(re.search(r"INSERT\s+OR\s+IGNORE\s+INTO", s, re.I))
     s = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", s, flags=re.I)
     if was_or_ignore and "on conflict" not in s.lower():
